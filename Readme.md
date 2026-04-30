@@ -124,7 +124,7 @@ K-means ile Cluster Ayarlama :
 
         3. 50 kere çalıştır :
 
-        python scripts/run_autoencoder.py --dataset-name breast_cancer_data.csv --target-column diagnosis --id-column none --feature-percent 30 --random-seed none --repeat-runs 50
+        python scripts/run_autoencoder.py --dataset-name breast_cancer_data.csv --target-column diagnosis --id-column none --feature-percent 30 --random-state none --repeat-runs 50
     
     "feature_percent": 20.0,
     "selected_feature_count": 6,
