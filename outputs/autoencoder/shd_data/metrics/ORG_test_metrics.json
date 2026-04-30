@@ -1,5 +1,5 @@
 {
     "test_mse": 1.0908007621765137,
-    "test_accuracy": 0.7777777777777778,
+    "test_accuracy": 0.7592592592592593,
     "threshold": 0.5
 }

@@ -436,6 +436,51 @@ def main(
 		classifier_learning_rate=classifier_learning_rate,
 	)
 
+
+def run_repeated_experiments(
+	dataset_name: str,
+	target_column: str,
+	id_column: str,
+	encoding_dim: int,
+	feature_percent: float,
+	random_state: int | None,
+	classifier_epochs: int,
+	classifier_hidden_units: tuple[int, ...],
+	classifier_dropout_rates: tuple[float, ...] | None,
+	classifier_learning_rate: float,
+	repeat_runs: int,
+	accuracy_txt_path: Path,
+) -> tuple[list[float], float]:
+	"""
+	Ayni deneyi repeat_runs kadar calistirir ve accuracy'leri kaydeder.
+	Sonuc: (accuracy_values, average_accuracy)
+	"""
+	accuracy_values: list[float] = []
+
+	for run_idx in range(1, repeat_runs + 1):
+		print(f"\n[INFO] Calisma {run_idx}/{repeat_runs} basladi.")
+		_, filtered_test_accuracy = main(
+			dataset_name=dataset_name,
+			target_column=target_column,
+			id_column=id_column,
+			encoding_dim=encoding_dim,
+			feature_percent=feature_percent,
+			random_state=random_state,
+			classifier_epochs=classifier_epochs,
+			classifier_hidden_units=classifier_hidden_units,
+			classifier_dropout_rates=classifier_dropout_rates,
+			classifier_learning_rate=classifier_learning_rate,
+		)
+		accuracy_values.append(float(filtered_test_accuracy))
+		accuracy_txt_path.write_text(str(accuracy_values), encoding="utf-8")
+
+	average_accuracy = sum(accuracy_values) / len(accuracy_values) if accuracy_values else 0.0
+	output_text = f"{accuracy_values}\nOrtalama Accuracy: {average_accuracy:.6f}"
+	accuracy_txt_path.write_text(output_text, encoding="utf-8")
+
+	return accuracy_values, average_accuracy
+
+
 if __name__ == "__main__":
 	parser = argparse.ArgumentParser(description="Basit autoencoder egitimi")
 	parser.add_argument("--dataset-name", type=str, default="breast_cancer_data.csv", help="Raw data dosyasi (.csv veya .txt)")
@@ -463,7 +508,6 @@ if __name__ == "__main__":
 	if args.classifier_learning_rate <= 0:
 		raise ValueError("classifier-learning-rate pozitif olmali.")
 
-	accuracy_values: list[float] = []
 	if args.accuracy_list_txt.strip():
 		accuracy_txt_path = Path(args.accuracy_list_txt)
 	else:
@@ -472,23 +516,22 @@ if __name__ == "__main__":
 		accuracy_txt_path = Path("outputs") / "autoencoder" / dataset_folder / "metrics" / f"top_{feature_percent_tag}_accuracy_runs.txt"
 	ensure_dir(accuracy_txt_path.parent)
 
-	#50 kere çalıştırıyor.
-	for run_idx in range(1, args.repeat_runs + 1):
-		print(f"\n[INFO] Calisma {run_idx}/{args.repeat_runs} basladi.")
-		_, filtered_test_accuracy = main(
-			dataset_name=args.dataset_name,
-			target_column=args.target_column,
-			id_column=args.id_column,
-			encoding_dim=args.encoding_dim,
-			feature_percent=args.feature_percent,
-			random_state=random_state,
-			classifier_epochs=args.classifier_epochs,
-			classifier_hidden_units=classifier_hidden_units,
-			classifier_dropout_rates=classifier_dropout_rates,
-			classifier_learning_rate=args.classifier_learning_rate,
-		)
-		accuracy_values.append(float(filtered_test_accuracy))
-		accuracy_txt_path.write_text(str(accuracy_values), encoding="utf-8")
+	# 50 KERE CALISACAK, HER CALISMADA AYNI RANDOM STATE VE PARAMETRELER KULLANILACAK, SONUCLAR KAYDEDILECEK
+	accuracy_values, average_accuracy = run_repeated_experiments(
+		dataset_name=args.dataset_name,
+		target_column=args.target_column,
+		id_column=args.id_column,
+		encoding_dim=args.encoding_dim,
+		feature_percent=args.feature_percent,
+		random_state=random_state,
+		classifier_epochs=args.classifier_epochs,
+		classifier_hidden_units=classifier_hidden_units,
+		classifier_dropout_rates=classifier_dropout_rates,
+		classifier_learning_rate=args.classifier_learning_rate,
+		repeat_runs=args.repeat_runs,
+		accuracy_txt_path=accuracy_txt_path,
+	)
 
 	print(f"[OK] Accuracy listesi yazildi: {accuracy_txt_path}")
 	print(f"[OK] Accuracy dizisi: {accuracy_values}")
+	print(f"[OK] Ortalama Accuracy: {average_accuracy:.6f}")
