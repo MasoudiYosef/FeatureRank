@@ -1,7 +1,13 @@
 {
     "feature_percent": 20.0,
-    "selected_feature_count": 3,
-    "test_mse": 0.803754985332489,
-    "test_accuracy": 0.5409836065573771,
-    "threshold": 0.5
+    "num_classes": 5,
+    "class_labels": [
+        0,
+        1,
+        2,
+        3,
+        4
+    ],
+    "macro_average": true,
+    "test_accuracy": 0.8557377049180328
 }

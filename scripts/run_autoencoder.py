@@ -21,7 +21,7 @@ from src.autoencoder_feature_selection import (
 	save_filtered_dataset_from_selected_features,
 	validate_feature_percent,
 )
-from src.utils import ensure_dir, save_json
+from src.utils import ensure_dir, save_json, compute_multiclass_macro_accuracy
 
 AUTOENCODER_EPOCHS = 50
 BATCH_SIZE = 16
@@ -180,32 +180,19 @@ def train_and_evaluate_pipeline(
 	return test_mse, test_accuracy, autoencoder, encoder
 
 
-def main(
-	dataset_name: str = "breast_cancer_data.csv",
-	target_column: str = "target",
-	id_column: str | None = "ID",
-	encoding_dim: int = 8,
-	feature_percent: float = 50.0,
-	random_state: int | None = RANDOM_STATE,
-	classifier_epochs: int = DEFAULT_CLASSIFIER_EPOCHS,
-	classifier_hidden_units: tuple[int, ...] = DEFAULT_CLASSIFIER_HIDDEN_UNITS,
-	classifier_dropout_rates: tuple[float, ...] | None = None,
-	classifier_learning_rate: float = 0.001,
+def run_binary_experiment(
+	df: pd.DataFrame,
+	dataset_folder: str,
+	target_column: str,
+	id_column: str | None,
+	encoding_dim: int,
+	feature_percent: float,
+	random_state: int | None,
+	classifier_epochs: int,
+	classifier_hidden_units: tuple[int, ...],
+	classifier_dropout_rates: tuple[float, ...] | None,
+	classifier_learning_rate: float,
 ) -> tuple[float, float]:
-	set_reproducible(random_state)
-	if random_state is None:
-		print("[INFO] random_state: None (rastgele)")
-	else:
-		print(f"[INFO] random_state: {random_state} (sabit)")
-	feature_percent = validate_feature_percent(feature_percent)
-	id_column = normalize_id_column(id_column)
-
-	dataset_filename = convert_txt_dataset_to_csv(dataset_name)
-	dataset_folder = Path(dataset_filename).stem
-
-	print(f"[INFO] Veri yukleniyor: {dataset_filename}")
-	df = load_data(dataset_filename, folder="raw", target_column=target_column)
-
 	processed = preprocess_data(df, target_column=target_column, id_column=id_column, random_state=random_state)
 	X_train_raw = processed["X_train"]
 	X_train, X_test, y_train, y_test = unpack_processed_arrays(processed)
@@ -305,6 +292,148 @@ def main(
 	print(f"[OK] Output klasoru: {output_dir}")
 	print(f"[OK] Metrik dosyasi: {metrics_dir / 'ORG_test_metrics.json'}")
 	return test_accuracy, filtered_test_accuracy
+
+
+def run_multiclass_one_vs_rest(
+	df: pd.DataFrame,
+	dataset_folder: str,
+	target_column: str,
+	id_column: str | None,
+	encoding_dim: int,
+	feature_percent: float,
+	random_state: int | None,
+	classifier_epochs: int,
+	classifier_hidden_units: tuple[int, ...],
+	classifier_dropout_rates: tuple[float, ...] | None,
+	classifier_learning_rate: float,
+) -> tuple[float, float]:
+	class_labels = sorted(df[target_column].dropna().unique().tolist())
+	if len(class_labels) <= 2:
+		raise ValueError("run_multiclass_one_vs_rest sadece 2'den fazla sinif icin kullanilmali.")
+
+	print(f"[INFO] Multi-class tespit edildi. Siniflar: {class_labels}")
+	for class_label in class_labels:
+		binary_df = df.copy()
+		# Istek: secili class 0, diger tum class'lar 1
+		binary_df[target_column] = (binary_df[target_column] != class_label).astype(np.int32)
+		binary_dataset_folder = f"{class_label}_{dataset_folder}"
+		nested_binary_folder = str(Path(dataset_folder) / binary_dataset_folder)
+
+		print(f"\n[INFO] One-vs-rest egitimi basliyor: class={class_label}, klasor={binary_dataset_folder}")
+		run_binary_experiment(
+			df=binary_df,
+			dataset_folder=nested_binary_folder,
+			target_column=target_column,
+			id_column=id_column,
+			encoding_dim=encoding_dim,
+			feature_percent=feature_percent,
+			random_state=random_state,
+			classifier_epochs=classifier_epochs,
+			classifier_hidden_units=classifier_hidden_units,
+			classifier_dropout_rates=classifier_dropout_rates,
+			classifier_learning_rate=classifier_learning_rate,
+		)
+
+	feature_percent_tag = format_feature_percent_tag(feature_percent)
+	macro_org_accuracy = compute_multiclass_macro_accuracy(
+		dataset_folder=dataset_folder,
+		class_labels=class_labels,
+		metric_filename="ORG_test_metrics.json",
+	)
+	macro_filtered_accuracy = compute_multiclass_macro_accuracy(
+		dataset_folder=dataset_folder,
+		class_labels=class_labels,
+		metric_filename=f"top_{feature_percent_tag}_test_metrics.json",
+	)
+
+	output_dir = Path("outputs") / "autoencoder" / dataset_folder
+	metrics_dir = output_dir / "metrics"
+	ensure_dir(output_dir)
+	ensure_dir(metrics_dir)
+
+	save_json(
+		{
+			"num_classes": len(class_labels),
+			"class_labels": class_labels,
+			"macro_average": True,
+			"test_accuracy": macro_org_accuracy,
+		},
+		metrics_dir / "ORG_test_metrics.json",
+	)
+
+	save_json(
+		{
+			"feature_percent": feature_percent,
+			"num_classes": len(class_labels),
+			"class_labels": class_labels,
+			"macro_average": True,
+			"test_accuracy": macro_filtered_accuracy,
+		},
+		metrics_dir / f"top_{feature_percent_tag}_test_metrics.json",
+	)
+
+	print("\n[OK] Multi-class one-vs-rest tamamlandi.")
+	print(f"[OK] ORG macro test_accuracy: {macro_org_accuracy:.6f}")
+	print(f"[OK] Top %{feature_percent} macro test_accuracy: {macro_filtered_accuracy:.6f}")
+	print(f"[OK] Metrik dosyasi: {metrics_dir / 'ORG_test_metrics.json'}")
+	return macro_org_accuracy, macro_filtered_accuracy
+
+
+def main(
+	dataset_name: str = "breast_cancer_data.csv",
+	target_column: str = "target",
+	id_column: str | None = "ID",
+	encoding_dim: int = 8,
+	feature_percent: float = 50.0,
+	random_state: int | None = RANDOM_STATE,
+	classifier_epochs: int = DEFAULT_CLASSIFIER_EPOCHS,
+	classifier_hidden_units: tuple[int, ...] = DEFAULT_CLASSIFIER_HIDDEN_UNITS,
+	classifier_dropout_rates: tuple[float, ...] | None = None,
+	classifier_learning_rate: float = 0.001,
+) -> tuple[float, float]:
+	set_reproducible(random_state)
+	if random_state is None:
+		print("[INFO] random_state: None (rastgele)")
+	else:
+		print(f"[INFO] random_state: {random_state} (sabit)")
+	feature_percent = validate_feature_percent(feature_percent)
+	id_column = normalize_id_column(id_column)
+
+	dataset_filename = convert_txt_dataset_to_csv(dataset_name)
+	dataset_folder = Path(dataset_filename).stem
+
+	print(f"[INFO] Veri yukleniyor: {dataset_filename}")
+	df = load_data(dataset_filename, folder="raw", target_column=target_column)
+
+	class_count = int(df[target_column].nunique(dropna=True))
+	if class_count > 2:
+		return run_multiclass_one_vs_rest(
+			df=df,
+			dataset_folder=dataset_folder,
+			target_column=target_column,
+			id_column=id_column,
+			encoding_dim=encoding_dim,
+			feature_percent=feature_percent,
+			random_state=random_state,
+			classifier_epochs=classifier_epochs,
+			classifier_hidden_units=classifier_hidden_units,
+			classifier_dropout_rates=classifier_dropout_rates,
+			classifier_learning_rate=classifier_learning_rate,
+		)
+
+	return run_binary_experiment(
+		df=df,
+		dataset_folder=dataset_folder,
+		target_column=target_column,
+		id_column=id_column,
+		encoding_dim=encoding_dim,
+		feature_percent=feature_percent,
+		random_state=random_state,
+		classifier_epochs=classifier_epochs,
+		classifier_hidden_units=classifier_hidden_units,
+		classifier_dropout_rates=classifier_dropout_rates,
+		classifier_learning_rate=classifier_learning_rate,
+	)
 
 if __name__ == "__main__":
 	parser = argparse.ArgumentParser(description="Basit autoencoder egitimi")
