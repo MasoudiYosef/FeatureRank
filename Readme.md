@@ -114,11 +114,16 @@ K-means ile Cluster Ayarlama :
 
 
     AUTOENCODER: 
-        Original :
+        1. Original :
+
         python scripts/run_autoencoder.py --dataset-name heart_disease_data.csv --target-column target --id-column none 
-        Filtered :
-        python scripts/run_autoencoder.py --dataset-name breast_cancer_data.csv --target-column diagnosis --id-column none --feature-percent 30 --random-seed 42 
-        50 kere çalıştır :
+
+        2. Filtered :
+
+        python scripts/run_autoencoder.py --dataset-name breast_cancer_data.csv --target-column diagnosis --id-column none --feature-percent 10 --random-seed 42 
+
+        3. 50 kere çalıştır :
+
         python scripts/run_autoencoder.py --dataset-name breast_cancer_data.csv --target-column diagnosis --id-column none --feature-percent 30 --random-seed none --repeat-runs 50
     
     "feature_percent": 20.0,
@@ -137,3 +142,9 @@ K-means ile Cluster Ayarlama :
     7.Eski ve yeni sonuçları dosyaya kaydetmek
 
 Bu kod, önce veri setini yükleyip ön işleme tabi tutuyor, ardından bir autoencoder eğiterek verinin sıkıştırılmış bir temsilini öğreniyor; sonra encoder çıktıları üzerinde ayrı bir sınıflandırıcı kurup test MSE ve test accuracy değerlerini hesaplıyor. Eğitim tamamlandıktan sonra autoencoder’ın ilk encoder katmanındaki ağırlıkları ve eğitim verisini birlikte kullanarak her feature’ın gizli nöronlara ortalama katkı listesini çıkarıyor, bu katkılardan en güçlü yüzde kadar feature’ı seçip yeni bir filtrelenmiş veri seti oluşturuyor, ardından aynı eğitim ve değerlendirme sürecini bu küçültülmüş veri seti üzerinde tekrar çalıştırıyor. Son olarak hem orijinal veriyle hem de seçilen feature’larla elde edilen performans sonuçlarını JSON ve CSV dosyalarına kaydedip kullanıcıya raporluyor; yani kodun temel amacı autoencoder ile temsil öğrenmek, bu temsilden feature önemini çıkarmak ve feature selection sonrası performansın nasıl değiştiğini karşılaştırmak.
+
+BİNARY MODEL:
+    0-1 target değerlerinden oluşur ve buna göre işlem yapılır.
+
+MULTİ CLASS MODEL:
+    Eğer data multi class ise yani içinde 0-1 dışında daha fazla sınıf barındırıyorsa, her birini binary hale getiriyoruz. Örnek 4 class varsa her birini 0 yapıp diğerlerini 1 yapıp yeni bir label elde ediyoruz. bu örnek için 4 adet yeni label datası elde ediyoruz her birinde ayrı ayrı test ediyoruz. ve en son bir metot ile ortalamalarını alıp bitiricez bu modeli.

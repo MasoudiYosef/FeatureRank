@@ -14,7 +14,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from src.config import RANDOM_STATE
 from src.data_loader import convert_txt_dataset_to_csv, load_data
-from src.models import build_sigmoid_autoencoder, build_latent_classifier
+from src.models import build_relu_autoencoder, build_latent_classifier
 from src.preprocessing import preprocess_data
 from src.autoencoder_feature_selection import (
 	save_top_percent_features_by_abs_max_weight,
@@ -136,7 +136,7 @@ def train_and_evaluate_pipeline(
 	classifier_dropout_rates: tuple[float, ...] | None,
 	classifier_learning_rate: float,
 ) -> tuple[float, float, tf.keras.Model, tf.keras.Model]:
-	autoencoder, encoder = build_sigmoid_autoencoder(
+	autoencoder, encoder = build_relu_autoencoder(
 		input_dim=X_train.shape[1],
 		encoding_dim=encoding_dim,
 	)
@@ -156,20 +156,13 @@ def train_and_evaluate_pipeline(
 	X_train_encoded = encoder.predict(X_train, verbose=0)
 	X_test_encoded = encoder.predict(X_test, verbose=0)
 
-	num_classes = int(np.unique(y_train).size)
 	classifier = build_latent_classifier(
 		input_dim=X_train_encoded.shape[1],
-		num_classes=num_classes,
 		hidden_units=classifier_hidden_units,
 		dropout_rates=classifier_dropout_rates,
 		learning_rate=classifier_learning_rate,
 	)
-
-
-	if num_classes == 2:
-		y_train_fit = y_train.astype(np.float32)
-	else:
-		y_train_fit = y_train.astype(np.int32)
+	y_train_fit = y_train.astype(np.float32)
 	classifier.fit(
 		X_train_encoded,
 		y_train_fit,
@@ -180,14 +173,9 @@ def train_and_evaluate_pipeline(
 	)
 
 	y_pred_prob = classifier.predict(X_test_encoded, verbose=0)
-
-	if(num_classes == 2):
-		y_pred = (y_pred_prob > THRESHOLD).astype(int).ravel()
-	else:
-		y_pred = np.argmax(y_pred_prob, axis=1)
+	y_pred = (y_pred_prob > THRESHOLD).astype(int).ravel()
 		
 	test_accuracy = float(accuracy_score(y_test.astype(int), y_pred))
-	print("num_classes:", num_classes)
 	print("classifier output shape:", classifier.output_shape)
 	return test_mse, test_accuracy, autoencoder, encoder
 
@@ -221,6 +209,8 @@ def main(
 	processed = preprocess_data(df, target_column=target_column, id_column=id_column, random_state=random_state)
 	X_train_raw = processed["X_train"]
 	X_train, X_test, y_train, y_test = unpack_processed_arrays(processed)
+	if not set(np.unique(y_train)).issubset({0, 1}) or not set(np.unique(y_test)).issubset({0, 1}):
+		raise ValueError("Bu script binary etiket bekliyor. Label degerleri sadece 0 ve 1 olmali.")
 
 	print(f"[INFO] X_train shape: {X_train.shape}")
 	print(f"[INFO] X_test shape : {X_test.shape}")

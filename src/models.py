@@ -7,8 +7,6 @@ from tensorflow.keras.models import Model, Sequential
 from tensorflow.keras.layers import (
     Input,
     Conv1D,
-    MaxPooling1D,
-    Flatten,
     Dense,
     Dropout
 )
@@ -27,7 +25,7 @@ def build_baseline_model():
 
 
 #CNN modeli oluşturma fonksiyonu
-def build_cnn(input_shape, num_classes=2):
+def build_cnn(input_shape):
     """
     Basit ve açıklanabilir CNN modeli.
     İlk Conv1D katmanı kernel_size=1 olduğu için feature ranking daha yorumlanabilir hale gelir.
@@ -38,7 +36,7 @@ def build_cnn(input_shape, num_classes=2):
     Activation("relu")(x) => negatifleri sıfırlar,pozitifleri bırakır.Gürültüyü azaltır. [-2, -1, 0, 3, 5] → [0, 0, 0, 3, 5]
     1.Pattern çıkarır (Conv1D)
     2. Stabil hale getirir (BatchNorm)
-    3. Önemli sinyali bırakır (ReLU)
+    3. Önemli sinyali bırakır (relu)
 
     GlobalAveragePooling1D()(x)
         Conv katmanlarından gelen çıktıyı özetler.
@@ -75,10 +73,7 @@ def build_cnn(input_shape, num_classes=2):
     x = GlobalAveragePooling1D()(x)
     x = Dropout(0.2)(x)
 
-    if num_classes == 2:
-        outputs = Dense(1, activation="sigmoid", name="output_layer")(x)
-    else:
-        outputs = Dense(num_classes, activation="softmax", name="output_layer")(x)
+    outputs = Dense(1, activation="sigmoid", name="output_layer")(x)
 
     model = Model(inputs=inputs, outputs=outputs, name="feature_ranking_cnn")
     return model
@@ -110,18 +105,18 @@ def build_autoencoder(input_dim=30, encoding_dim=8):
     return autoencoder, encoder
 
 
-def build_sigmoid_autoencoder(input_dim=30, encoding_dim=8):
+def build_relu_autoencoder(input_dim=30, encoding_dim=8):
     """
-    Sigmoid aktivasyonlu autoencoder ve encoder modeli.
+    relu aktivasyonlu autoencoder ve encoder modeli.
     run_autoencoder scripti için merkezi model tanımı.
     """
     input_layer = Input(shape=(input_dim,), name="input_layer")
 
-    encoded_hidden = Dense(16, activation="sigmoid", name="enc_dense_1")(input_layer)
-    encoded = Dense(encoding_dim, activation="sigmoid", name="enc_dense_2")(encoded_hidden)
+    encoded_hidden = Dense(16, activation="relu", name="enc_dense_1")(input_layer)
+    encoded = Dense(encoding_dim, activation="relu", name="enc_dense_2")(encoded_hidden)
 
-    decoded_hidden = Dense(16, activation="sigmoid", name="dec_dense_1")(encoded)
-    decoded = Dense(input_dim, activation="sigmoid", name="dec_output")(decoded_hidden)
+    decoded_hidden = Dense(16, activation="relu", name="dec_dense_1")(encoded)
+    decoded = Dense(input_dim, activation="relu", name="dec_output")(decoded_hidden)
 
     autoencoder = Model(inputs=input_layer, outputs=decoded, name="autoencoder")
     encoder = Model(inputs=input_layer, outputs=encoded, name="encoder")
@@ -136,15 +131,12 @@ def build_sigmoid_autoencoder(input_dim=30, encoding_dim=8):
 
 def build_latent_classifier(
     input_dim,
-    num_classes=2,
     hidden_units=(32, 16),
     dropout_rates=None,
     learning_rate=0.001,
 ):
     """
-    Encoder çıktısı üzerinde çalışan classifier modeli.
-    - num_classes == 2: sigmoid + binary_crossentropy
-    - num_classes > 2 : softmax + sparse_categorical_crossentropy
+    Encoder çıktısı üzerinde çalışan binary classifier modeli.
     """
     classifier_input = Input(shape=(input_dim,), name="classifier_input")
     x = classifier_input
@@ -160,12 +152,8 @@ def build_latent_classifier(
         if dropout_rates is not None and float(dropout_rates[i - 1]) > 0:
             x = Dropout(float(dropout_rates[i - 1]), name=f"classifier_dropout_{i}")(x)
 
-    if num_classes == 2:
-        classifier_output = Dense(1, activation="sigmoid", name="classifier_output")(x)
-        loss = "binary_crossentropy"
-    else:
-        classifier_output = Dense(num_classes, activation="softmax", name="classifier_output")(x)
-        loss = "sparse_categorical_crossentropy"
+    classifier_output = Dense(1, activation="sigmoid", name="classifier_output")(x)
+    loss = "binary_crossentropy"
 
     classifier = Model(inputs=classifier_input, outputs=classifier_output, name="latent_classifier")
     classifier.compile(
@@ -181,6 +169,6 @@ __all__ = [
     "build_baseline_model",
     "build_cnn",
     "build_autoencoder",
-    "build_sigmoid_autoencoder",
+    "build_relu_autoencoder",
     "build_latent_classifier",
 ]
