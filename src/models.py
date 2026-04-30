@@ -105,18 +105,18 @@ def build_autoencoder(input_dim=30, encoding_dim=8):
     return autoencoder, encoder
 
 
-def build_relu_autoencoder(input_dim=30, encoding_dim=8):
+def build_relu_autoencoder(input_dim=30, encoding_dim=8,activation="relu"):
     """
     relu aktivasyonlu autoencoder ve encoder modeli.
     run_autoencoder scripti için merkezi model tanımı.
     """
     input_layer = Input(shape=(input_dim,), name="input_layer")
 
-    encoded_hidden = Dense(16, activation="relu", name="enc_dense_1")(input_layer)
-    encoded = Dense(encoding_dim, activation="relu", name="enc_dense_2")(encoded_hidden)
+    encoded_hidden = Dense(16, activation=activation, name="enc_dense_1")(input_layer)
+    encoded = Dense(encoding_dim, activation=activation, name="enc_dense_2")(encoded_hidden)
 
-    decoded_hidden = Dense(16, activation="relu", name="dec_dense_1")(encoded)
-    decoded = Dense(input_dim, activation="relu", name="dec_output")(decoded_hidden)
+    decoded_hidden = Dense(16, activation=activation, name="dec_dense_1")(encoded)
+    decoded = Dense(input_dim, activation=activation, name="dec_output")(decoded_hidden)
 
     autoencoder = Model(inputs=input_layer, outputs=decoded, name="autoencoder")
     encoder = Model(inputs=input_layer, outputs=encoded, name="encoder")

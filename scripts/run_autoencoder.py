@@ -139,6 +139,7 @@ def train_and_evaluate_pipeline(
 	autoencoder, encoder = build_relu_autoencoder(
 		input_dim=X_train.shape[1],
 		encoding_dim=encoding_dim,
+		activation="sigmoid",
 	)
 
 	autoencoder.fit(
