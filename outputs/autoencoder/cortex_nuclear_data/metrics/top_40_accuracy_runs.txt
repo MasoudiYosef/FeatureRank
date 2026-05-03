@@ -1,0 +1,2 @@
+[0.875]
+Ortalama Accuracy: 0.875000

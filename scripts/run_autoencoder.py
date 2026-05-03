@@ -14,7 +14,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from src.config import RANDOM_STATE
 from src.data_loader import convert_txt_dataset_to_csv, load_data
-from src.models import build_relu_autoencoder, build_latent_classifier
+from src.models import build_sigmoid_autoencoder, build_latent_classifier
 from src.preprocessing import preprocess_data
 from src.autoencoder_feature_selection import (
 	save_top_percent_features_by_abs_max_weight,
@@ -41,6 +41,43 @@ def set_reproducible(seed: int | None) -> None:
 		tf.config.experimental.enable_op_determinism()
 	except Exception:
 		pass
+
+
+def configure_tensorflow_device(device: str = "auto") -> None:
+	device = device.lower().strip()
+	if device not in {"auto", "gpu", "cpu"}:
+		raise ValueError("device parametresi 'auto', 'gpu' veya 'cpu' olmalidir.")
+
+	available_gpus = tf.config.list_physical_devices("GPU")
+	if device == "gpu":
+		if not available_gpus:
+			raise RuntimeError(
+				"GPU bulunamadi. GPU ile calistirmak icin uygun CUDA/cuDNN ve GPU destekli TensorFlow yuklu olmalidir."
+			)
+		print(f"[INFO] GPU algilandi: {[gpu.name for gpu in available_gpus]}")
+		try:
+			for gpu in available_gpus:
+				tf.config.experimental.set_memory_growth(gpu, True)
+			tf.config.set_visible_devices(available_gpus, "GPU")
+		except Exception as exc:
+			print(f"[WARN] GPU ayarlari yapilamadi: {exc}")
+	elif device == "cpu":
+		try:
+			tf.config.set_visible_devices([], "GPU")
+			print("[INFO] GPU devre disi birakildi, CPU uzerinden calisiyor.")
+		except Exception as exc:
+			print(f"[WARN] GPU devre disi birakilamadi: {exc}")
+	else:
+		if available_gpus:
+			print(f"[INFO] GPU mevcut, GPU uzerinden calisacak: {[gpu.name for gpu in available_gpus]}")
+			try:
+				for gpu in available_gpus:
+					tf.config.experimental.set_memory_growth(gpu, True)
+				tf.config.set_visible_devices(available_gpus, "GPU")
+			except Exception as exc:
+				print(f"[WARN] GPU ayarlari yapilamadi: {exc}")
+		else:
+			print("[INFO] GPU bulunamadi, CPU uzerinden calisiyor.")
 
 
 def save_feature_weighted_lists(autoencoder, X_train: np.ndarray, feature_names: list[str], output_path: Path) -> None:
@@ -136,12 +173,12 @@ def train_and_evaluate_pipeline(
 	classifier_dropout_rates: tuple[float, ...] | None,
 	classifier_learning_rate: float,
 ) -> tuple[float, float, tf.keras.Model, tf.keras.Model]:
-	autoencoder, encoder = build_relu_autoencoder(
+	autoencoder, encoder = build_sigmoid_autoencoder(
 		input_dim=X_train.shape[1],
 		encoding_dim=encoding_dim,
 		activation="sigmoid",
 	)
-
+	
 	autoencoder.fit(
 		X_train,
 		X_train,
@@ -193,6 +230,8 @@ def run_binary_experiment(
 	classifier_hidden_units: tuple[int, ...],
 	classifier_dropout_rates: tuple[float, ...] | None,
 	classifier_learning_rate: float,
+	current_class_label: int | None = None,
+	class_counts: dict[int, int] | None = None,
 ) -> tuple[float, float]:
 	processed = preprocess_data(df, target_column=target_column, id_column=id_column, random_state=random_state)
 	X_train_raw = processed["X_train"]
@@ -259,23 +298,47 @@ def run_binary_experiment(
 		classifier_learning_rate,
 	)
 
+	org_metrics_data = {
+		"test_mse": test_mse,
+		"test_accuracy": test_accuracy,
+		"threshold": THRESHOLD,
+	}
+	if current_class_label is not None and class_counts is not None:
+		org_metrics_data["current_class_label"] = current_class_label
+		org_metrics_data["class_counts"] = class_counts
+		# Binary model'de label 0 ve 1 sayılarını ekle
+		label_0_count = int(np.sum(y_test == 0))
+		label_1_count = int(np.sum(y_test == 1))
+		org_metrics_data["binary_label_counts"] = {
+			"label_0": label_0_count,
+			"label_1": label_1_count
+		}
+
 	save_json(
-		{
-			"test_mse": test_mse,
-			"test_accuracy": test_accuracy,
-			"threshold": THRESHOLD,
-		},
+		org_metrics_data,
 		metrics_dir / "ORG_test_metrics.json",
 	)
 
+	filtered_metrics_data = {
+		"feature_percent": feature_percent,
+		"selected_feature_count": len(selected_df),
+		"test_mse": filtered_test_mse,
+		"test_accuracy": filtered_test_accuracy,
+		"threshold": THRESHOLD,
+	}
+	if current_class_label is not None and class_counts is not None:
+		filtered_metrics_data["current_class_label"] = current_class_label
+		filtered_metrics_data["class_counts"] = class_counts
+		# Binary model'de label 0 ve 1 sayılarını ekle (filtered dataset)
+		label_0_count_filtered = int(np.sum(y_test_filtered == 0))
+		label_1_count_filtered = int(np.sum(y_test_filtered == 1))
+		filtered_metrics_data["binary_label_counts"] = {
+			"label_0": label_0_count_filtered,
+			"label_1": label_1_count_filtered
+		}
+
 	save_json(
-		{
-			"feature_percent": feature_percent,
-			"selected_feature_count": len(selected_df),
-			"test_mse": filtered_test_mse,
-			"test_accuracy": filtered_test_accuracy,
-			"threshold": THRESHOLD,
-		},
+		filtered_metrics_data,
 		metrics_dir / f"top_{feature_percent_tag}_test_metrics.json",
 	)
 
@@ -313,6 +376,12 @@ def run_multiclass_one_vs_rest(
 		raise ValueError("run_multiclass_one_vs_rest sadece 2'den fazla sinif icin kullanilmali.")
 
 	print(f"[INFO] Multi-class tespit edildi. Siniflar: {class_labels}")
+	
+	# Orijinal df'den multiclass label distribution hesapla (weighted average için)
+	# preprocessing sonrası y_test encoded olur, bu yüzden orijinal df'den count alalım
+	class_counts = {label: int((df[target_column] == label).sum()) for label in class_labels}
+	print(f"[INFO] Dataset class sayilari: {class_counts}")
+	
 	for class_label in class_labels:
 		binary_df = df.copy()
 		# Istek: secili class 0, diger tum class'lar 1
@@ -333,6 +402,8 @@ def run_multiclass_one_vs_rest(
 			classifier_hidden_units=classifier_hidden_units,
 			classifier_dropout_rates=classifier_dropout_rates,
 			classifier_learning_rate=classifier_learning_rate,
+			current_class_label=class_label,
+			class_counts=class_counts,
 		)
 
 	feature_percent_tag = format_feature_percent_tag(feature_percent)
@@ -391,7 +462,9 @@ def main(
 	classifier_hidden_units: tuple[int, ...] = DEFAULT_CLASSIFIER_HIDDEN_UNITS,
 	classifier_dropout_rates: tuple[float, ...] | None = None,
 	classifier_learning_rate: float = 0.001,
+	device: str = "auto",
 ) -> tuple[float, float]:
+	configure_tensorflow_device(device)
 	set_reproducible(random_state)
 	if random_state is None:
 		print("[INFO] random_state: None (rastgele)")
@@ -448,6 +521,7 @@ def run_repeated_experiments(
 	classifier_hidden_units: tuple[int, ...],
 	classifier_dropout_rates: tuple[float, ...] | None,
 	classifier_learning_rate: float,
+	device: str,
 	repeat_runs: int,
 	accuracy_txt_path: Path,
 ) -> tuple[list[float], float]:
@@ -470,6 +544,7 @@ def run_repeated_experiments(
 			classifier_hidden_units=classifier_hidden_units,
 			classifier_dropout_rates=classifier_dropout_rates,
 			classifier_learning_rate=classifier_learning_rate,
+			device=device,
 		)
 		accuracy_values.append(float(filtered_test_accuracy))
 		accuracy_txt_path.write_text(str(accuracy_values), encoding="utf-8")
@@ -495,6 +570,7 @@ if __name__ == "__main__":
 	parser.add_argument("--classifier-hidden-units", type=str, default="32,16", help="Classifier gizli katman nöronlari. Ornek: 128,64")
 	parser.add_argument("--classifier-dropout-rates", type=str, default="", help="Classifier dropout oranlari. Ornek: 0.3,0.2")
 	parser.add_argument("--classifier-learning-rate", type=float, default=0.001, help="Classifier ogrenme orani")
+	parser.add_argument("--device", type=str, default="auto", choices=["auto", "gpu", "cpu"], help="Cihaz secimi: auto, gpu veya cpu")
 
 
 	args = parser.parse_args()
@@ -528,6 +604,7 @@ if __name__ == "__main__":
 		classifier_hidden_units=classifier_hidden_units,
 		classifier_dropout_rates=classifier_dropout_rates,
 		classifier_learning_rate=args.classifier_learning_rate,
+		device=args.device,
 		repeat_runs=args.repeat_runs,
 		accuracy_txt_path=accuracy_txt_path,
 	)

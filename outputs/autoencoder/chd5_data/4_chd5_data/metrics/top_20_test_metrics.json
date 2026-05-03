@@ -3,5 +3,17 @@
     "selected_feature_count": 3,
     "test_mse": 0.9026939272880554,
     "test_accuracy": 0.9508196721311475,
-    "threshold": 0.5
+    "threshold": 0.5,
+    "current_class_label": 4,
+    "class_counts": {
+        "0": 164,
+        "1": 55,
+        "2": 36,
+        "3": 35,
+        "4": 13
+    },
+    "binary_label_counts": {
+        "label_0": 3,
+        "label_1": 58
+    }
 }

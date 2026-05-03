@@ -1,0 +1,16 @@
+{
+    "feature_percent": 40.0,
+    "num_classes": 8,
+    "class_labels": [
+        "c-CS-m",
+        "c-CS-s",
+        "c-SC-m",
+        "c-SC-s",
+        "t-CS-m",
+        "t-CS-s",
+        "t-SC-m",
+        "t-SC-s"
+    ],
+    "macro_average": true,
+    "test_accuracy": 0.875
+}

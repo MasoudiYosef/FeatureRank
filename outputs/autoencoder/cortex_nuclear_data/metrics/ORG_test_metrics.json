@@ -1,5 +1,15 @@
 {
-    "test_mse": 0.873562753200531,
-    "test_accuracy": 0.375,
-    "threshold": 0.5
+    "num_classes": 8,
+    "class_labels": [
+        "c-CS-m",
+        "c-CS-s",
+        "c-SC-m",
+        "c-SC-s",
+        "t-CS-m",
+        "t-CS-s",
+        "t-SC-m",
+        "t-SC-s"
+    ],
+    "macro_average": true,
+    "test_accuracy": 0.8757073045267489
 }
