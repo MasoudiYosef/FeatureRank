@@ -1,0 +1,5 @@
+feature,feature_name,max_abs_weight_score
+F9,feature_9,0.985483705997467
+F13,feature_13,0.7208773493766785
+F11,feature_11,0.66729736328125
+F10,feature_10,0.6496301889419556

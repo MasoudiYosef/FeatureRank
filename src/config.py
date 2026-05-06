@@ -38,8 +38,7 @@ REPORTS_DIR = BASE_DIR / "outputs" / "reports"
 TARGET_COLUMN = "diagnosis"
 ID_COLUMN = "ID"
 
-# Deney ayarları
-TEST_SIZE = 0.2
+TEST_SIZE = 0.1
 VALIDATION_SIZE = 0.2
 RANDOM_STATE = 42
 

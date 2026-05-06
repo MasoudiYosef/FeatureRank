@@ -1,16 +1,15 @@
-""""" Info: Bu dosyalar, projenin farklı aşamalarında kullanılan temel bileşenleri içerir. Her dosya, belirli bir görevi yerine getirmek için tasarlanmıştır ve projenin genel yapısını oluşturur."""
-
 from pathlib import Path
 import json
+import numpy as np
 
-
-def ensure_dir(path: Path) -> None:
+# Otomatik olarak tüm parent klasörleri yaratır
+def ensure_dir(path: Path) -> None: 
     """
     Verilen klasör yoksa oluşturur.
     """
     path.mkdir(parents=True, exist_ok=True)
 
-
+#Python dictionary'sini JSON dosyası olarak kaydeder
 def save_json(data: dict, path: Path) -> None:
     """
     Dictionary verisini JSON olarak kaydeder.
@@ -18,7 +17,7 @@ def save_json(data: dict, path: Path) -> None:
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=4)
 
-
+#Multiclass weighted average hesaplar
 def compute_multiclass_macro_accuracy(
     dataset_folder: str,
     class_labels: list,
@@ -91,3 +90,63 @@ def compute_multiclass_macro_accuracy(
     
     total_correct = sum(acc * cnt for acc, cnt in zip(accuracy_list, class_counts_list))
     return total_correct / total_samples
+
+
+def normalize_id_column(id_column: str | None) -> str | None:
+    """
+    ID column string'ini işle ("none" → None)
+    """
+    if id_column and id_column.lower() in {"none", "null", "-", ""}:
+        return None
+    return id_column
+
+
+def format_feature_percent_tag(feature_percent: float) -> str:
+    """
+    % sayısını tag'a çevir (50.0 → "50", 50.5 → "50_5")
+    """
+    if float(feature_percent).is_integer():
+        return str(int(feature_percent))
+    return str(feature_percent).replace(".", "_")
+
+
+def parse_hidden_units(units_text: str) -> tuple[int, ...]:
+    """
+    String'den hidden unit list'i parse et ("32,16" → (32, 16))
+    """
+    parts = [p.strip() for p in units_text.split(",") if p.strip()]
+    if not parts:
+        raise ValueError("classifier-hidden-units bos olamaz. Ornek: 128,64")
+    units = tuple(int(p) for p in parts)
+    if any(u <= 0 for u in units):
+        raise ValueError("classifier-hidden-units pozitif tam sayilar olmali.")
+    return units
+
+
+def parse_dropout_rates(dropout_text: str | None, layer_count: int) -> tuple[float, ...] | None:
+    """
+    Dropout oranlarını string'den parse et ("0.2,0.3" → (0.2, 0.3))
+    """
+    if dropout_text is None:
+        return None
+    text = dropout_text.strip()
+    if text == "":
+        return None
+    parts = [p.strip() for p in text.split(",") if p.strip()]
+    dropouts = tuple(float(p) for p in parts)
+    if len(dropouts) != layer_count:
+        raise ValueError("classifier-dropout-rates uzunlugu, hidden katman sayisi ile ayni olmali.")
+    if any((d < 0.0 or d >= 1.0) for d in dropouts):
+        raise ValueError("dropout oranlari [0.0, 1.0) araliginda olmali.")
+    return dropouts
+
+
+def unpack_processed_arrays(processed: dict) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Preprocessed dict'ten X_train, X_test, y_train, y_test çıkart
+    """
+    X_train = processed["X_train_scaled"]
+    X_test = processed["X_test_scaled"]
+    y_train = processed["y_train"].to_numpy().astype(np.int32)
+    y_test = processed["y_test"].to_numpy().astype(np.int32)
+    return X_train, X_test, y_train, y_test

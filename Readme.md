@@ -1,5 +1,6 @@
 - "python3 -m venv .venv" => Bu komut proje içinde .venv klasörü oluşturur.
-- "source .venv/bin/activate" => Başarılı olursa terminalin başında genelde şöyle bir şey görünür: (.venv) 
+- "source .venv/bin/activate "
+" => Başarılı olursa terminalin başında genelde şöyle bir şey görünür: (.venv) 
 
 Kurulan Kütüphaneler :
  - "pip install pandas numpy scikit-learn matplotlib seaborn openpyxl tensorflow"
@@ -148,3 +149,21 @@ BİNARY MODEL:
 
 MULTİ CLASS MODEL:
     Eğer data multi class ise yani içinde 0-1 dışında daha fazla sınıf barındırıyorsa, her birini binary hale getiriyoruz. Örnek 4 class varsa her birini 0 yapıp diğerlerini 1 yapıp yeni bir label elde ediyoruz. bu örnek için 4 adet yeni label datası elde ediyoruz her birinde ayrı ayrı test ediyoruz. ve en son bir metot ile ortalamalarını alıp bitiricez bu modeli.
+
+{
+    "test_mse": 1.04411780834198,
+    "test_accuracy": 0.8360655737704918,
+    "threshold": 0.5,
+    "current_class_label": 0,
+    "class_counts": {
+        "0": 164,
+        "1": 55,
+        "2": 36,
+        "3": 35,
+        "4": 13
+    },
+    "binary_label_counts": {
+        "label_0": 33,  # Test (%20)
+        "label_1": 28   # Test (%20)
+    }
+}

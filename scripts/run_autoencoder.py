@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 import tensorflow as tf
 from sklearn.metrics import accuracy_score
+from sklearn.model_selection import train_test_split
 
 # Proje kokunu import path'ine ekle
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -15,7 +16,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from src.config import RANDOM_STATE
 from src.data_loader import convert_txt_dataset_to_csv, load_data
 from src.models import build_sigmoid_autoencoder, build_latent_classifier
-from src.preprocessing import preprocess_data
+from src.preprocessing import preprocess_data, scale_data
 from src.autoencoder_feature_selection import (
 	save_top_percent_features_by_abs_max_weight,
 	save_filtered_dataset_from_selected_features,
@@ -80,23 +81,23 @@ def configure_tensorflow_device(device: str = "auto") -> None:
 			print("[INFO] GPU bulunamadi, CPU uzerinden calisiyor.")
 
 
-def save_feature_weighted_lists(autoencoder, X_train: np.ndarray, feature_names: list[str], output_path: Path) -> None:
+def save_feature_weighted_lists(autoencoder, X_train_sub: np.ndarray, feature_names: list[str], output_path: Path) -> None:
 	"""
 	Her feature icin bagli oldugu nöronlara sample-bazli katkı listesi uretir:
 	contribution_list_i[j] = mean_s( abs(x_s,i * w_i,j) )
 	"""
 	weights = autoencoder.get_layer("enc_dense_1").get_weights()[0]  # (n_features, n_neurons)
-	if X_train.ndim != 2:
-		raise ValueError(f"X_train 2 boyutlu olmali, gelen shape: {X_train.shape}")
+	if X_train_sub.ndim != 2:
+		raise ValueError(f"X_train_sub 2 boyutlu olmali, gelen shape: {X_train_sub.shape}")
 
-	if weights.shape[0] != X_train.shape[1]:
+	if weights.shape[0] != X_train_sub.shape[1]:
 		raise ValueError(
-			f"X_train feature boyutu ({X_train.shape[1]}) ile agirlik satir sayisi ({weights.shape[0]}) eslesmiyor."
+			f"X_train feature boyutu ({X_train_sub.shape[1]}) ile agirlik satir sayisi ({weights.shape[0]}) eslesmiyor."
 		)
 
 	# (n_samples, n_features, 1) * (1, n_features, n_neurons)
 	# -> (n_samples, n_features, n_neurons)
-	contributions = np.abs(X_train[:, :, np.newaxis] * weights[np.newaxis, :, :])
+	contributions = np.abs(X_train_sub[:, :, np.newaxis] * weights[np.newaxis, :, :])
 	weighted = np.mean(contributions, axis=0)  # (n_features, n_neurons)
 
 	df = pd.DataFrame(
@@ -155,10 +156,18 @@ def parse_random_state(random_state_text: str | None) -> int | None:
 
 
 def unpack_processed_arrays(processed: dict) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-	X_train = processed["X_train_scaled"]
-	X_test = processed["X_test_scaled"]
+	"""Unpack processed data and ensure consistent float32 dtype for TensorFlow."""
+	X_train = processed["X_train_scaled"].astype(np.float32)
+	X_test = processed["X_test_scaled"].astype(np.float32)
 	y_train = processed["y_train"].to_numpy().astype(np.int32)
 	y_test = processed["y_test"].to_numpy().astype(np.int32)
+	
+	# Validate data
+	if np.isnan(X_train).any() or np.isinf(X_train).any():
+		raise ValueError(f"X_train contains NaN/Inf values. X_train shape: {X_train.shape}")
+	if np.isnan(X_test).any() or np.isinf(X_test).any():
+		raise ValueError(f"X_test contains NaN/Inf values. X_test shape: {X_test.shape}")
+	
 	return X_train, X_test, y_train, y_test
 
 
@@ -168,54 +177,89 @@ def train_and_evaluate_pipeline(
 	y_train: np.ndarray,
 	y_test: np.ndarray,
 	encoding_dim: int,
+	random_state: int | None,
 	classifier_epochs: int,
 	classifier_hidden_units: tuple[int, ...],
 	classifier_dropout_rates: tuple[float, ...] | None,
 	classifier_learning_rate: float,
-) -> tuple[float, float, tf.keras.Model, tf.keras.Model]:
+) -> tuple[float, float, tf.keras.Model, tf.keras.Model, np.ndarray]:
+	X_train_sub, X_val, y_train_sub, y_val = train_test_split(
+		X_train,
+		y_train,
+		test_size=CLASSIFIER_VALIDATION_SPLIT,
+		random_state=random_state,
+		shuffle=True,
+		stratify=y_train,
+	)
+
 	autoencoder, encoder = build_sigmoid_autoencoder(
 		input_dim=X_train.shape[1],
 		encoding_dim=encoding_dim,
 		activation="sigmoid",
 	)
 	
+	# Ensure consistent dtypes
+	X_train_sub = X_train_sub.astype(np.float32)
+	X_val = X_val.astype(np.float32)
+	
 	autoencoder.fit(
-		X_train,
-		X_train,
-		validation_data=(X_test, X_test),
+		X_train_sub,
+		X_train_sub,
+		validation_data=(X_val, X_val),
 		epochs=AUTOENCODER_EPOCHS,
 		batch_size=BATCH_SIZE,
 		shuffle=True,
 		verbose=1,
 	)
 
+	X_test = X_test.astype(np.float32)
 	test_mse = float(autoencoder.evaluate(X_test, X_test, verbose=0))
 
-	X_train_encoded = encoder.predict(X_train, verbose=0)
-	X_test_encoded = encoder.predict(X_test, verbose=0)
+	X_train_encoded = encoder.predict(X_train_sub, verbose=0).astype(np.float32)
+	X_val_encoded = encoder.predict(X_val, verbose=0).astype(np.float32)
+	X_test_encoded = encoder.predict(X_test, verbose=0).astype(np.float32)
 
+	# Get encoded dimension for validation
+	encoder_output_dim = X_train_encoded.shape[1]
+	
 	classifier = build_latent_classifier(
-		input_dim=X_train_encoded.shape[1],
+		input_dim=encoder_output_dim,
 		hidden_units=classifier_hidden_units,
 		dropout_rates=classifier_dropout_rates,
 		learning_rate=classifier_learning_rate,
 	)
-	y_train_fit = y_train.astype(np.float32)
+	y_train_fit = y_train_sub.astype(np.float32)
+	y_val_fit = y_val.astype(np.float32)
+	
+	# Verify input/output shapes match model expectations
+	if X_train_encoded.shape[1] != encoder_output_dim:
+		raise ValueError(
+			f"Encoder output dim {X_train_encoded.shape[1]} != expected dim {encoder_output_dim}"
+		)
+	
 	classifier.fit(
 		X_train_encoded,
 		y_train_fit,
 		epochs=classifier_epochs,
 		batch_size=BATCH_SIZE,
-		validation_split=CLASSIFIER_VALIDATION_SPLIT,
+		validation_data=(X_val_encoded, y_val_fit),
 		verbose=1,
 	)
 
 	y_pred_prob = classifier.predict(X_test_encoded, verbose=0)
+	# Handle both single-output (sigmoid) and multi-output predictions
+	if y_pred_prob.ndim == 2 and y_pred_prob.shape[1] == 1:
+		y_pred_prob = y_pred_prob.ravel()
 	y_pred = (y_pred_prob > THRESHOLD).astype(int).ravel()
-		
+	
+	if len(y_pred) != len(y_test):
+		raise ValueError(
+			f"Prediction length {len(y_pred)} != y_test length {len(y_test)}"
+		)
+	
 	test_accuracy = float(accuracy_score(y_test.astype(int), y_pred))
 	print("classifier output shape:", classifier.output_shape)
-	return test_mse, test_accuracy, autoencoder, encoder
+	return test_mse, test_accuracy, autoencoder, encoder,X_train_sub
 
 
 def run_binary_experiment(
@@ -235,6 +279,7 @@ def run_binary_experiment(
 ) -> tuple[float, float]:
 	processed = preprocess_data(df, target_column=target_column, id_column=id_column, random_state=random_state)
 	X_train_raw = processed["X_train"]
+	X_test_raw = processed["X_test"]
 	X_train, X_test, y_train, y_test = unpack_processed_arrays(processed)
 	if not set(np.unique(y_train)).issubset({0, 1}) or not set(np.unique(y_test)).issubset({0, 1}):
 		raise ValueError("Bu script binary etiket bekliyor. Label degerleri sadece 0 ve 1 olmali.")
@@ -242,12 +287,13 @@ def run_binary_experiment(
 	print(f"[INFO] X_train shape: {X_train.shape}")
 	print(f"[INFO] X_test shape : {X_test.shape}")
 
-	test_mse, test_accuracy, autoencoder, _ = train_and_evaluate_pipeline(
+	test_mse, test_accuracy, autoencoder, _, X_train_sub_used = train_and_evaluate_pipeline(
 		X_train,
 		X_test,
 		y_train,
 		y_test,
 		encoding_dim,
+		random_state,
 		classifier_epochs,
 		classifier_hidden_units,
 		classifier_dropout_rates,
@@ -261,7 +307,7 @@ def run_binary_experiment(
 
 	feature_names = X_train_raw.columns.tolist()
 	weights_path = output_dir / "first_layer_W_list.csv"
-	save_feature_weighted_lists(autoencoder, X_train, feature_names, weights_path)
+	save_feature_weighted_lists(autoencoder, X_train_sub_used, feature_names, weights_path)
 
 	feature_percent_tag = format_feature_percent_tag(feature_percent)
 	selected_features_path = output_dir / f"top_{feature_percent_tag}_max_abs_features.csv"
@@ -283,15 +329,22 @@ def run_binary_experiment(
 		id_column=id_column,
 	)
 
-	filtered_train_df = pd.read_csv(filtered_dataset_path)
-	processed_filtered = preprocess_data(filtered_train_df, target_column=target_column, id_column=id_column, random_state=random_state)
-	X_train_filtered, X_test_filtered, y_train_filtered, y_test_filtered = unpack_processed_arrays(processed_filtered)
-	filtered_test_mse, filtered_test_accuracy, _, _ = train_and_evaluate_pipeline(
+	selected_feature_names = selected_df["feature_name"].tolist()
+	X_train_filtered_raw = X_train_raw[selected_feature_names]
+	X_test_filtered_raw = X_test_raw[selected_feature_names]
+	X_train_filtered, X_test_filtered, _ = scale_data(X_train_filtered_raw, X_test_filtered_raw)
+	# Ensure consistent float32 dtype
+	X_train_filtered = X_train_filtered.astype(np.float32)
+	X_test_filtered = X_test_filtered.astype(np.float32)
+	y_train_filtered = y_train
+	y_test_filtered = y_test
+	filtered_test_mse, filtered_test_accuracy, _, _,_= train_and_evaluate_pipeline(
 		X_train_filtered,
 		X_test_filtered,
 		y_train_filtered,
 		y_test_filtered,
 		encoding_dim,
+		random_state,
 		classifier_epochs,
 		classifier_hidden_units,
 		classifier_dropout_rates,

@@ -26,101 +26,18 @@ def build_baseline_model():
     return model
 
 
-#CNN modeli oluşturma fonksiyonu
-def build_cnn(input_shape, num_classes=2):
-    """
-    Basit ve açıklanabilir CNN modeli.
-    İlk Conv1D katmanı kernel_size=1 olduğu için feature ranking daha yorumlanabilir hale gelir.
-    
-    64 filtre → 64 farklı pattern öğrenilecek (F1, F2, F3... birlikte nasıl etkili  1.(F1-F2-F3) 2. (F1-F2-F4) gibi)
-    kernel_size=3 → her seferinde 3 feature’a birlikte bakıyor. F1-F2-F3 gibi.
-    padding="same" → output boyutu input ile aynı kalır
-    Activation("relu")(x) => negatifleri sıfırlar,pozitifleri bırakır.Gürültüyü azaltır. [-2, -1, 0, 3, 5] → [0, 0, 0, 3, 5]
-    1.Pattern çıkarır (Conv1D)
-    2. Stabil hale getirir (BatchNorm)
-    3. Önemli sinyali bırakır (ReLU)
-
-    GlobalAveragePooling1D()(x)
-        Conv katmanlarından gelen çıktıyı özetler.
-        Her filtrenin genel aktivasyonunu tek sayıya indirger.
-    Dropout(0.2)(x)
-        Eğitim sırasında bazı nöronları overfitting azaltmak için rastgele kapatır.
-
-    Activation("relu")(x):
-        - Gereksiz zayıf/negatif sinyalleri temizler
-        - Modeli doğrusal olmaktan çıkarır
-        - Daha karmaşık örüntüler öğrenmesini sağlar
-    """
-    inputs = Input(shape=input_shape, name="input_layer")
-
-    # Feature ranking için en önemli katman:
-    # İlk conv katmanı -> her feature için öğrenilen ağırlıkları buradan çıkaracağız
-    x = Conv1D(
-        filters=32,
-        kernel_size=input_shape[0],  # Her seferinde tüm feature’lara bakacak şekilde kernel_size=feature sayısı (Her bakışta tüm feature’ları birlikte değerlendirir ve bir şeyler öğrenir.Her filtre, tüm feature seti üzerinde bir ağırlık dizisi öğreniyor.)
-        padding="same",
-        name="feature_conv"
-    )(inputs)
-    x = BatchNormalization()(x)
-    x = Activation("relu")(x)
-
-    x = Conv1D(filters=64, kernel_size=input_shape[0], padding="same")(x)
-    x = BatchNormalization()(x)
-    x = Activation("relu")(x)   
-
-    x = Conv1D(filters=64, kernel_size=input_shape[0], padding="same")(x)
-    x = BatchNormalization()(x)
-    x = Activation("relu")(x)
-
-    x = GlobalAveragePooling1D()(x)
-    x = Dropout(0.2)(x)
-
-    if num_classes == 2:
-        outputs = Dense(1, activation="sigmoid", name="output_layer")(x)
-    else:
-        outputs = Dense(num_classes, activation="softmax", name="output_layer")(x)
-
-    model = Model(inputs=inputs, outputs=outputs, name="feature_ranking_cnn")
-    return model
-
-
-def build_autoencoder(input_dim=30, encoding_dim=8):
-    """
-    Input→Encoder→Bottleneck→Decoder→Reconstruction
-    Tablosal veri için dense autoencoder modeli oluşturur.
-    """
-    input_layer = Input(shape=(input_dim,), name="input_layer")
-
-    # Encoder
-    encoded = Dense(16, activation="relu", name="encoder_dense_1")(input_layer)
-    bottleneck = Dense(encoding_dim, activation="relu", name="bottleneck")(encoded)
-
-    # Decoder
-    decoded = Dense(16, activation="relu", name="decoder_dense_1")(bottleneck)
-    output_layer = Dense(input_dim, activation="linear", name="output_layer")(decoded)
-
-    autoencoder = Model(inputs=input_layer, outputs=output_layer, name="autoencoder")
-    encoder = Model(inputs=input_layer, outputs=bottleneck, name="encoder")
-
-    autoencoder.compile(
-        optimizer=Adam(learning_rate=0.001),
-        loss="mse"
-    )
-
-    return autoencoder, encoder
-
-
-def build_sigmoid_autoencoder(input_dim=30, encoding_dim=8,activation="sigmoid"):
+def build_sigmoid_autoencoder(input_dim=30, encoding_dim=32,activation="sigmoid"):
     """
     Sigmoid aktivasyonlu autoencoder ve encoder modeli.
     run_autoencoder scripti için merkezi model tanımı.
+    Expects float32 input from TensorFlow Keras.
     """
-    input_layer = Input(shape=(input_dim,), name="input_layer")
+    input_layer = Input(shape=(input_dim,), dtype="float32", name="input_layer")
 
-    encoded_hidden = Dense(16, activation, name="enc_dense_1")(input_layer)
+    encoded_hidden = Dense(128, activation, name="enc_dense_1")(input_layer)
     encoded = Dense(encoding_dim, activation, name="enc_dense_2")(encoded_hidden)
 
-    decoded_hidden = Dense(16, activation, name="dec_dense_1")(encoded)
+    decoded_hidden = Dense(128, activation, name="dec_dense_1")(encoded)
     decoded = Dense(input_dim, activation, name="dec_output")(decoded_hidden)
 
     autoencoder = Model(inputs=input_layer, outputs=decoded, name="autoencoder")
@@ -128,7 +45,8 @@ def build_sigmoid_autoencoder(input_dim=30, encoding_dim=8,activation="sigmoid")
 
     autoencoder.compile(
         optimizer=Adam(learning_rate=0.001),
-        loss="mse"
+        loss="mse",
+        jit_compile=False
     )
 
     return autoencoder, encoder
@@ -145,8 +63,9 @@ def build_latent_classifier(
     Encoder çıktısı üzerinde çalışan classifier modeli.
     - num_classes == 2: sigmoid + binary_crossentropy
     - num_classes > 2 : softmax + sparse_categorical_crossentropy
+    Expects float32 input from encoder.
     """
-    classifier_input = Input(shape=(input_dim,), name="classifier_input")
+    classifier_input = Input(shape=(input_dim,), dtype="float32", name="classifier_input")
     x = classifier_input
 
     if not hidden_units:
@@ -171,7 +90,8 @@ def build_latent_classifier(
     classifier.compile(
         optimizer=Adam(learning_rate=learning_rate),
         loss=loss,
-        metrics=["accuracy"]
+        metrics=["accuracy"],
+        jit_compile=False
     )
 
     return classifier
@@ -180,7 +100,6 @@ def build_latent_classifier(
 __all__ = [
     "build_baseline_model",
     "build_cnn",
-    "build_autoencoder",
     "build_sigmoid_autoencoder",
     "build_latent_classifier",
 ]

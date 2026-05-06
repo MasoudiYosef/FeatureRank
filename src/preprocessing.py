@@ -17,7 +17,7 @@ import pandas as pd
 import numpy as np
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
-
+from sklearn.preprocessing import MinMaxScaler
 from src.config import TARGET_COLUMN, ID_COLUMN, TEST_SIZE, RANDOM_STATE
 
 
@@ -73,6 +73,23 @@ def split_features_target(df: pd.DataFrame, target_column: str = TARGET_COLUMN):
     X = df.drop(columns=[target_column])
     y = df[target_column]
     return X, y
+
+
+def handle_pid_unrealistic_zeros(X: pd.DataFrame) -> pd.DataFrame:
+    """
+    PID (Pima Indians Diabetes) veri seti icin gercek disi 0 degerleri NaN yapar.
+    feature_2..feature_6 sirasiyla glucose, blood_pressure, skin_thickness,
+    insulin ve BMI'ye karsilik gelir; bu alanlarda 0 fizyolojik olarak gecersizdir.
+    """
+    X_fixed = X.copy()
+
+    pid_like_columns = [f"feature_{i}" for i in range(1, 9)]
+    if list(X_fixed.columns) != pid_like_columns:
+        return X_fixed
+
+    zero_as_missing_cols = ["feature_2", "feature_3", "feature_4", "feature_5", "feature_6"]
+    X_fixed[zero_as_missing_cols] = X_fixed[zero_as_missing_cols].replace(0, np.nan)
+    return X_fixed
 
 
 def sanitize_mixed_type_features(X: pd.DataFrame) -> pd.DataFrame:
@@ -141,21 +158,19 @@ def split_data(X: pd.DataFrame, y: pd.Series, random_state: int | None = RANDOM_
 def scale_data(X_train: pd.DataFrame, X_test: pd.DataFrame):
     """
     StandardScaler ile veriyi ölçekler.
-    Sadece X_train üzerinde fit yapılır. 0.24 leri 0-1 arasına getirir. 
+    Sadece X_train üzerinde fit yapılır. 0.24 leri 0-1 arasına getirir.
+    Çıkış dtype: float32 (TensorFlow uyumluluğu için)
     """
+    #Standart SCALER
     scaler = StandardScaler()
 
-    X_train_scaled = scaler.fit_transform(X_train)
-    X_test_scaled = scaler.transform(X_test)
+    #MİN-MAX SCALER
+    #scaler = MinMaxScaler()
+
+    X_train_scaled = scaler.fit_transform(X_train).astype(np.float32)
+    X_test_scaled = scaler.transform(X_test).astype(np.float32)
 
     return X_train_scaled, X_test_scaled, scaler
-
-
-def reshape_for_cnn(X: np.ndarray):
-    """
-    1D CNN için veriyi (örnek_sayısı, özellik_sayısı, 1) formatına çevirir.
-    """
-    return X.reshape(X.shape[0], X.shape[1], 1)
 
 
 def preprocess_data(
@@ -166,26 +181,29 @@ def preprocess_data(
 ):
     """
     Tüm preprocessing adımlarını sırasıyla uygular.
+    Çıkış: float32 arrays (TensorFlow uyumluluğu)
     """
     df = drop_id_column(df, id_column=id_column)
     df = encode_target(df, target_column=target_column)
 
     X, y = split_features_target(df, target_column=target_column)
+    X = handle_pid_unrealistic_zeros(X)
     X = keep_numeric_features_only(X)
     X_train, X_test, y_train, y_test = split_data(X, y, random_state=random_state)
     X_train_scaled, X_test_scaled, scaler = scale_data(X_train, X_test)
-
-    X_train_cnn = reshape_for_cnn(X_train_scaled)
-    X_test_cnn = reshape_for_cnn(X_test_scaled)
+    
+    # Final validation
+    if np.isnan(X_train_scaled).any() or np.isinf(X_train_scaled).any():
+        raise ValueError(f"X_train_scaled contains NaN/Inf. Shape: {X_train_scaled.shape}")
+    if np.isnan(X_test_scaled).any() or np.isinf(X_test_scaled).any():
+        raise ValueError(f"X_test_scaled contains NaN/Inf. Shape: {X_test_scaled.shape}")
 
     return {
         "X_train": X_train,
         "X_test": X_test,
         "y_train": y_train,
         "y_test": y_test,
-        "X_train_scaled": X_train_scaled,
-        "X_test_scaled": X_test_scaled,
-        "X_train_cnn": X_train_cnn,
-        "X_test_cnn": X_test_cnn,
+        "X_train_scaled": X_train_scaled.astype(np.float32),
+        "X_test_scaled": X_test_scaled.astype(np.float32),
         "scaler": scaler,
     }
