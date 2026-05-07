@@ -1,14 +1,20 @@
 import pandas as pd
 
-# CSV dosyasını oku
-df = pd.read_csv("chd2_datas.csv")
+df = pd.read_csv("gen_datas.csv",low_memory=False)
 
-# Son sütun = label
-X = df.iloc[:, :-1]   # tüm sütunlar (son hariç)
-y = df.iloc[:, -1]    # sadece son sütun
+df = df.iloc[1:].reset_index(drop=True)
 
-# CSV olarak kaydet
-X.to_csv("chd2_data.csv", index=False)
-y.to_csv("chd2_label.csv", index=False)
+if df.shape[1] > 1:
+    first_col = df.columns[0]
+    if str(first_col).lower() in ["id", "index", "no", "sample_id"]:
+        df = df.iloc[:, 1:]
 
-print("Data ve label başarıyla ayrıldı.")
+label = df.iloc[:, -1]
+
+data = df.iloc[:, :-1]
+
+data.to_csv("gen_data.csv", index=False, header=False)
+label.to_csv("gen_label.csv", index=False, header=False)
+
+print("Header tamamen silindi")
+print("Label ayrıldı")

@@ -1,0 +1,17 @@
+{
+    "test_mse": 0.991790771484375,
+    "test_accuracy": 1.0,
+    "threshold": 0.5,
+    "current_class_label": "KIRC",
+    "class_counts": {
+        "BRCA": 300,
+        "COAD": 78,
+        "KIRC": 146,
+        "LUAD": 141,
+        "PRAD": 136
+    },
+    "binary_label_counts": {
+        "label_0": 15,
+        "label_1": 66
+    }
+}

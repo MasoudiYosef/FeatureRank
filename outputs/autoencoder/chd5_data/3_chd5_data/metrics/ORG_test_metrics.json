@@ -1,5 +1,5 @@
 {
-    "test_mse": 0.07689600437879562,
+    "test_mse": 1.0338550806045532,
     "test_accuracy": 0.8709677419354839,
     "threshold": 0.5,
     "current_class_label": 3,

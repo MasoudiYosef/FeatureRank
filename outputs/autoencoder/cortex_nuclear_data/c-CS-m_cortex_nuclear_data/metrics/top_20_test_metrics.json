@@ -1,7 +1,7 @@
 {
     "feature_percent": 20.0,
     "selected_feature_count": 16,
-    "test_mse": 0.8605862855911255,
+    "test_mse": 0.8251293301582336,
     "test_accuracy": 0.8611111111111112,
     "threshold": 0.5,
     "current_class_label": "c-CS-m",
@@ -16,7 +16,7 @@
         "t-SC-s": 135
     },
     "binary_label_counts": {
-        "label_0": 30,
-        "label_1": 186
+        "label_0": 15,
+        "label_1": 93
     }
 }

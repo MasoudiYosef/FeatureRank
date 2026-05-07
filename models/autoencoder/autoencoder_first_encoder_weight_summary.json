@@ -1,0 +1,8 @@
+{
+    "raw_weights_shape": [
+        30,
+        16
+    ],
+    "global_weight_max": 0.5302789211273193,
+    "global_weight_avg": 0.18978556990623474
+}

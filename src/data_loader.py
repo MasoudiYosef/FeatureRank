@@ -2,6 +2,8 @@
 """
 
 from pathlib import Path
+from io import StringIO
+import re
 
 import pandas as pd
 from pandas.errors import ParserError
@@ -78,6 +80,21 @@ def _build_label_filename(dataset_name: str) -> str:
     return dataset_name.replace("_data.csv", "_label.csv")
 
 
+def _read_csv_with_scientific_comma_fix(path: Path, is_feature_file: bool = False) -> pd.DataFrame:
+    """
+    Bazi ham CSV dosyalarinda bilimsel gosterimde ondalik virgul kullaniliyor
+    (ornek: 5,00E-04). Bu durum delimiter olan ',' ile cakisip parser hatasi
+    uretebiliyor. Yalnizca bu paterni 5.00E-04 formatina cevirip tekrar parse eder.
+    """
+    raw_text = path.read_text(encoding="utf-8", errors="ignore")
+    fixed_text = re.sub(r"(?<=\d),(?=\d+E[+-]?\d+)", ".", raw_text, flags=re.IGNORECASE)
+
+    df = pd.read_csv(StringIO(fixed_text), header=None)
+    if is_feature_file:
+        df.columns = [f"feature_{i+1}" for i in range(df.shape[1])]
+    return df
+
+
 def _read_csv_flexible(path, is_feature_file: bool = False) -> pd.DataFrame:
     try:
         if is_feature_file:
@@ -87,7 +104,13 @@ def _read_csv_flexible(path, is_feature_file: bool = False) -> pd.DataFrame:
 
         return pd.read_csv(path, header=None)
     except ParserError:
-        # Fallback: bazı dosyalar ';' ayraç ve ',' ondalık ile geliyor.
+        # 1) Once bilimsel gosterimdeki ondalik virgul sorununu duzeltmeyi dene.
+        try:
+            return _read_csv_with_scientific_comma_fix(path, is_feature_file=is_feature_file)
+        except Exception:
+            pass
+
+        # 2) Fallback: bazi dosyalar ';' ayrac ve ',' ondalik ile geliyor.
         if is_feature_file:
             df = pd.read_csv(path, sep=';', decimal=',', header=None)
             df.columns = [f"feature_{i+1}" for i in range(df.shape[1])]

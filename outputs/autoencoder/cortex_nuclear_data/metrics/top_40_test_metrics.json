@@ -12,5 +12,5 @@
         "t-SC-s"
     ],
     "macro_average": true,
-    "test_accuracy": 0.875
+    "test_accuracy": 0.8975051440329218
 }

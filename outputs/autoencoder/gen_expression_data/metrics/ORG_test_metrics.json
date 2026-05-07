@@ -1,0 +1,12 @@
+{
+    "num_classes": 5,
+    "class_labels": [
+        "BRCA",
+        "COAD",
+        "KIRC",
+        "LUAD",
+        "PRAD"
+    ],
+    "macro_average": true,
+    "test_accuracy": 0.8988918173271065
+}

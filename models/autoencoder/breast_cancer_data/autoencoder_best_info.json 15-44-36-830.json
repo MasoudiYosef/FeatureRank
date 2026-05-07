@@ -1,0 +1,6 @@
+{
+    "best_epoch": 50,
+    "best_val_loss": 0.2134273797273636,
+    "final_train_loss": 0.1685633659362793,
+    "final_val_loss": 0.2134273797273636
+}

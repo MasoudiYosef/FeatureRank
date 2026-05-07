@@ -1,0 +1,13 @@
+{
+    "feature_percent": 20.0,
+    "num_classes": 5,
+    "class_labels": [
+        "BRCA",
+        "COAD",
+        "KIRC",
+        "LUAD",
+        "PRAD"
+    ],
+    "macro_average": true,
+    "test_accuracy": 0.9672939689585548
+}

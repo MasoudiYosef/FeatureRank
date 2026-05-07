@@ -1,6 +1,6 @@
 {
-    "test_mse": 0.9569904208183289,
-    "test_accuracy": 0.875,
+    "test_mse": 0.7873877286911011,
+    "test_accuracy": 0.9074074074074074,
     "threshold": 0.5,
     "current_class_label": "c-CS-s",
     "class_counts": {
@@ -14,7 +14,7 @@
         "t-SC-s": 135
     },
     "binary_label_counts": {
-        "label_0": 27,
-        "label_1": 189
+        "label_0": 14,
+        "label_1": 94
     }
 }

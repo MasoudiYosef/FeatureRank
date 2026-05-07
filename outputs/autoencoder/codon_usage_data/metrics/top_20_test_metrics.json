@@ -1,0 +1,19 @@
+{
+    "feature_percent": 20.0,
+    "num_classes": 11,
+    "class_labels": [
+        "arc",
+        "bct",
+        "inv",
+        "mam",
+        "phg",
+        "plm",
+        "pln",
+        "pri",
+        "rod",
+        "vrl",
+        "vrt"
+    ],
+    "macro_average": true,
+    "test_accuracy": 0.9090483664560021
+}
