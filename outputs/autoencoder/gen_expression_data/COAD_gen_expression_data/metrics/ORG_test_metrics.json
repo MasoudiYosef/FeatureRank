@@ -1,6 +1,6 @@
 {
-    "test_mse": 0.8966019153594971,
-    "test_accuracy": 0.9753086419753086,
+    "test_mse": 0.9080568552017212,
+    "test_accuracy": 0.9012345679012346,
     "threshold": 0.5,
     "current_class_label": "COAD",
     "class_counts": {

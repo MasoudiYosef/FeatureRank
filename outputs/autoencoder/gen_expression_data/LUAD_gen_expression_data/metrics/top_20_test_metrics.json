@@ -1,8 +1,8 @@
 {
     "feature_percent": 20.0,
-    "selected_feature_count": 200,
-    "test_mse": 0.8328322172164917,
-    "test_accuracy": 1.0,
+    "selected_feature_count": 4106,
+    "test_mse": 0.8782738447189331,
+    "test_accuracy": 0.9012345679012346,
     "threshold": 0.5,
     "current_class_label": "LUAD",
     "class_counts": {

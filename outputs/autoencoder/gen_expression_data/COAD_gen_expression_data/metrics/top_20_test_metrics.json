@@ -1,8 +1,8 @@
 {
     "feature_percent": 20.0,
-    "selected_feature_count": 200,
-    "test_mse": 0.8388231992721558,
-    "test_accuracy": 0.9876543209876543,
+    "selected_feature_count": 4106,
+    "test_mse": 0.8870797753334045,
+    "test_accuracy": 0.9012345679012346,
     "threshold": 0.5,
     "current_class_label": "COAD",
     "class_counts": {

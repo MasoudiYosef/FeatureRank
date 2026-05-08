@@ -1,5 +1,5 @@
 {
-    "test_mse": 0.991790771484375,
+    "test_mse": 1.0044728517532349,
     "test_accuracy": 1.0,
     "threshold": 0.5,
     "current_class_label": "KIRC",
