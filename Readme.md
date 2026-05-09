@@ -3,8 +3,14 @@
 " => Başarılı olursa terminalin başında genelde şöyle bir şey görünür: (.venv) 
 
 Kurulan Kütüphaneler :
- - "pip install pandas numpy scikit-learn matplotlib seaborn openpyxl tensorflow"
+ - "pip install -r requirements.txt" => CPU ile çalışmak için
+ - "pip install -r requirements-gpu.txt" => GPU ile çalışmak için (bkz: GPU_SETUP.md)
  - "pip freeze > requirements.txt" => Projeyi başka bilgisayarda açarsan aynı kütüphaneleri tekrar kurabilirmemizi sağlar.
+
+GPU KURULUMU:
+ - GPU'lu bir bilgisayarda çalıştırmak için GPU_SETUP.md dosyasını oku
+ - CUDA, cuDNN ve NVIDIA Driver kurulum talimatları içerir
+ - requirements-gpu.txt ile uyumlu TensorFlow kurulması sağlanır
 
 
 Tanımlar :
