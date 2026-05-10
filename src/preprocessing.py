@@ -102,6 +102,13 @@ def sanitize_mixed_type_features(X: pd.DataFrame) -> pd.DataFrame:
     """
     X_clean = X.copy()
 
+    if all(pd.api.types.is_numeric_dtype(X_clean[col]) for col in X_clean.columns):
+        if X_clean.shape[1] == 0:
+            raise ValueError("Sayısal feature kolonu bulunamadı. Data dosyasını kontrol edin.")
+        if X_clean.isna().any().any():
+            X_clean = X_clean.fillna(X_clean.median(numeric_only=True)).fillna(0.0)
+        return X_clean
+
     for col in X_clean.columns:
         series = X_clean[col]
         if pd.api.types.is_numeric_dtype(series):
@@ -178,6 +185,7 @@ def preprocess_data(
     target_column: str = TARGET_COLUMN,
     id_column: str | None = ID_COLUMN,
     random_state: int | None = RANDOM_STATE,
+    scale_features: bool = True,
 ):
     """
     Tüm preprocessing adımlarını sırasıyla uygular.
@@ -190,6 +198,17 @@ def preprocess_data(
     X = handle_pid_unrealistic_zeros(X)
     X = keep_numeric_features_only(X)
     X_train, X_test, y_train, y_test = split_data(X, y, random_state=random_state)
+    if not scale_features:
+        return {
+            "X_train": X_train,
+            "X_test": X_test,
+            "y_train": y_train,
+            "y_test": y_test,
+            "X_train_scaled": None,
+            "X_test_scaled": None,
+            "scaler": None,
+        }
+
     X_train_scaled, X_test_scaled, scaler = scale_data(X_train, X_test)
     
     # Final validation

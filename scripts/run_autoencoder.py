@@ -30,6 +30,8 @@ CLASSIFIER_VALIDATION_SPLIT = 0.1
 THRESHOLD = 0.5
 DEFAULT_CLASSIFIER_EPOCHS = 50
 DEFAULT_CLASSIFIER_HIDDEN_UNITS = (32, 16)
+DEFAULT_FEATURE_CHUNK_SIZE = 1000
+DEFAULT_CHUNK_FEATURE_THRESHOLD = 20000
 
 
 def set_reproducible(seed: int | None) -> None:
@@ -262,6 +264,224 @@ def train_and_evaluate_pipeline(
 	return test_mse, test_accuracy, autoencoder, encoder,X_train_sub
 
 
+def split_feature_names_into_chunks(feature_names: list[str], chunk_size: int) -> list[list[str]]:
+	if chunk_size <= 0:
+		raise ValueError("feature-chunk-size pozitif tam sayi olmali.")
+	return [
+		feature_names[start : start + chunk_size]
+		for start in range(0, len(feature_names), chunk_size)
+	]
+
+
+def should_use_feature_chunking(
+	feature_count: int,
+	chunk_feature_threshold: int,
+	feature_chunk_size: int,
+	enable_feature_chunking: bool,
+) -> bool:
+	if not enable_feature_chunking:
+		return False
+	if chunk_feature_threshold <= 0:
+		raise ValueError("chunk-feature-threshold pozitif tam sayi olmali.")
+	if feature_chunk_size <= 0:
+		raise ValueError("feature-chunk-size pozitif tam sayi olmali.")
+	return feature_count > chunk_feature_threshold
+
+
+def run_chunked_binary_experiment(
+	df: pd.DataFrame,
+	processed: dict,
+	dataset_folder: str,
+	target_column: str,
+	id_column: str | None,
+	encoding_dim: int,
+	feature_percent: float,
+	random_state: int | None,
+	classifier_epochs: int,
+	classifier_hidden_units: tuple[int, ...],
+	classifier_dropout_rates: tuple[float, ...] | None,
+	classifier_learning_rate: float,
+	feature_chunk_size: int,
+	current_class_label: int | None = None,
+	class_counts: dict[int, int] | None = None,
+) -> tuple[float, float]:
+	X_train_raw = processed["X_train"]
+	X_test_raw = processed["X_test"]
+	y_train = processed["y_train"].to_numpy().astype(np.int32)
+	y_test = processed["y_test"].to_numpy().astype(np.int32)
+	feature_names = X_train_raw.columns.tolist()
+	feature_chunks = split_feature_names_into_chunks(feature_names, feature_chunk_size)
+	feature_percent_tag = format_feature_percent_tag(feature_percent)
+
+	output_dir = Path("outputs") / "autoencoder" / dataset_folder
+	metrics_dir = output_dir / "metrics"
+	chunks_dir = output_dir / "chunks"
+	filtered_data_dir = Path("data") / "autoencoder" / dataset_folder
+	ensure_dir(output_dir)
+	ensure_dir(metrics_dir)
+	ensure_dir(chunks_dir)
+	ensure_dir(filtered_data_dir)
+
+	print(
+		f"[INFO] Büyük feature seti tespit edildi: {len(feature_names)} feature. "
+		f"{len(feature_chunks)} parçaya bölünüyor (chunk_size={feature_chunk_size})."
+	)
+
+	chunk_selected_frames: list[pd.DataFrame] = []
+	chunk_summaries: list[dict] = []
+
+	for chunk_idx, chunk_feature_names in enumerate(feature_chunks, start=1):
+		chunk_name = f"chunk_{chunk_idx:03d}"
+		chunk_dir = chunks_dir / chunk_name
+		ensure_dir(chunk_dir)
+
+		print(
+			f"\n[INFO] {chunk_name}/{len(feature_chunks):03d} egitimi basliyor "
+			f"(feature sayisi: {len(chunk_feature_names)})."
+		)
+
+		X_train_chunk_raw = X_train_raw[chunk_feature_names]
+		X_test_chunk_raw = X_test_raw[chunk_feature_names]
+		X_train_chunk, X_test_chunk, _ = scale_data(X_train_chunk_raw, X_test_chunk_raw)
+		X_train_chunk = X_train_chunk.astype(np.float32)
+		X_test_chunk = X_test_chunk.astype(np.float32)
+
+		chunk_test_mse, chunk_test_accuracy, chunk_autoencoder, _, chunk_train_sub = train_and_evaluate_pipeline(
+			X_train_chunk,
+			X_test_chunk,
+			y_train,
+			y_test,
+			encoding_dim,
+			random_state,
+			classifier_epochs,
+			classifier_hidden_units,
+			classifier_dropout_rates,
+			classifier_learning_rate,
+		)
+
+		chunk_weights_path = chunk_dir / "first_layer_W_list.csv"
+		save_feature_weighted_lists(
+			chunk_autoencoder,
+			chunk_train_sub,
+			chunk_feature_names,
+			chunk_weights_path,
+		)
+
+		chunk_selected_path = chunk_dir / f"top_{feature_percent_tag}_max_abs_features.csv"
+		chunk_selected_df = save_top_percent_features_by_abs_max_weight(
+			weight_list_csv_path=chunk_weights_path,
+			feature_names=chunk_feature_names,
+			feature_percent=feature_percent,
+			output_path=chunk_selected_path,
+		)
+		chunk_selected_df.insert(0, "chunk", chunk_name)
+		chunk_selected_frames.append(chunk_selected_df)
+
+		chunk_summaries.append(
+			{
+				"chunk": chunk_name,
+				"feature_count": len(chunk_feature_names),
+				"selected_feature_count": len(chunk_selected_df),
+				"test_mse": chunk_test_mse,
+				"test_accuracy": chunk_test_accuracy,
+				"weights_path": str(chunk_weights_path),
+				"selected_features_path": str(chunk_selected_path),
+			}
+		)
+
+		save_json(chunk_summaries[-1], metrics_dir / f"{chunk_name}_test_metrics.json")
+		print(
+			f"[OK] {chunk_name} tamamlandi. "
+			f"Top %{feature_percent}: {len(chunk_selected_df)} feature, "
+			f"accuracy: {chunk_test_accuracy:.6f}"
+		)
+
+	all_chunk_selected_df = pd.concat(chunk_selected_frames, ignore_index=True)
+	all_chunk_selected_path = output_dir / f"chunked_top_{feature_percent_tag}_max_abs_features.csv"
+	all_chunk_selected_df.to_csv(all_chunk_selected_path, index=False)
+
+	merged_feature_names = list(dict.fromkeys(all_chunk_selected_df["feature_name"].tolist()))
+	merged_selected_df = pd.DataFrame(
+		{
+			"feature": [f"F{i+1}" for i in range(len(merged_feature_names))],
+			"feature_name": merged_feature_names,
+			"source": "chunked_top_features",
+		}
+	)
+	merged_selected_path = output_dir / f"chunked_merged_top_{feature_percent_tag}_features.csv"
+	merged_selected_df.to_csv(merged_selected_path, index=False)
+
+	merged_dataset_path = filtered_data_dir / f"chunked_top_{feature_percent_tag}_max_abs_features_dataset.csv"
+	merged_filtered_df = save_filtered_dataset_from_selected_features(
+		full_df=df,
+		selected_df=merged_selected_df,
+		target_column=target_column,
+		output_path=merged_dataset_path,
+		id_column=id_column,
+	)
+
+	X_train_merged_raw = X_train_raw[merged_feature_names]
+	X_test_merged_raw = X_test_raw[merged_feature_names]
+	X_train_merged, X_test_merged, _ = scale_data(X_train_merged_raw, X_test_merged_raw)
+	X_train_merged = X_train_merged.astype(np.float32)
+	X_test_merged = X_test_merged.astype(np.float32)
+
+	print(
+		f"\n[INFO] Chunk top feature'lari birlestirildi: "
+		f"{len(merged_feature_names)} feature. Final egitim basliyor."
+	)
+	final_test_mse, final_test_accuracy, _, _, _ = train_and_evaluate_pipeline(
+		X_train_merged,
+		X_test_merged,
+		y_train,
+		y_test,
+		encoding_dim,
+		random_state,
+		classifier_epochs,
+		classifier_hidden_units,
+		classifier_dropout_rates,
+		classifier_learning_rate,
+	)
+
+	final_metrics_data = {
+		"chunked_feature_selection": True,
+		"feature_percent": feature_percent,
+		"original_feature_count": len(feature_names),
+		"feature_chunk_size": feature_chunk_size,
+		"chunk_count": len(feature_chunks),
+		"merged_feature_count": len(merged_feature_names),
+		"test_mse": final_test_mse,
+		"test_accuracy": final_test_accuracy,
+		"threshold": THRESHOLD,
+		"chunk_summaries": chunk_summaries,
+		"all_chunk_selected_features_path": str(all_chunk_selected_path),
+		"merged_selected_features_path": str(merged_selected_path),
+		"merged_dataset_path": str(merged_dataset_path),
+	}
+	if current_class_label is not None and class_counts is not None:
+		final_metrics_data["current_class_label"] = current_class_label
+		final_metrics_data["class_counts"] = class_counts
+		final_metrics_data["binary_label_counts"] = {
+			"label_0": int(np.sum(y_test == 0)),
+			"label_1": int(np.sum(y_test == 1)),
+		}
+
+	save_json(final_metrics_data, metrics_dir / f"chunked_top_{feature_percent_tag}_test_metrics.json")
+	save_json(final_metrics_data, metrics_dir / f"top_{feature_percent_tag}_test_metrics.json")
+
+	print("\n[OK] Chunked autoencoder akisi tamamlandi.")
+	print(f"[OK] Orijinal feature sayisi: {len(feature_names)}")
+	print(f"[OK] Chunk sayisi: {len(feature_chunks)}")
+	print(f"[OK] Birlesen top feature sayisi: {len(merged_feature_names)}")
+	print(f"[OK] Final dataset test_mse: {final_test_mse:.6f}")
+	print(f"[OK] Final dataset test_accuracy: {final_test_accuracy:.6f}")
+	print(f"[OK] Chunk secim CSV: {all_chunk_selected_path}")
+	print(f"[OK] Birlesik feature CSV: {merged_selected_path}")
+	print(f"[OK] Birlesik dataset CSV: {merged_dataset_path} (satir: {len(merged_filtered_df)})")
+	print(f"[OK] Final metrik dosyasi: {metrics_dir / f'chunked_top_{feature_percent_tag}_test_metrics.json'}")
+	return final_test_accuracy, final_test_accuracy
+
+
 def run_binary_experiment(
 	df: pd.DataFrame,
 	dataset_folder: str,
@@ -274,18 +494,56 @@ def run_binary_experiment(
 	classifier_hidden_units: tuple[int, ...],
 	classifier_dropout_rates: tuple[float, ...] | None,
 	classifier_learning_rate: float,
+	feature_chunk_size: int = DEFAULT_FEATURE_CHUNK_SIZE,
+	chunk_feature_threshold: int = DEFAULT_CHUNK_FEATURE_THRESHOLD,
+	enable_feature_chunking: bool = True,
 	current_class_label: int | None = None,
 	class_counts: dict[int, int] | None = None,
 ) -> tuple[float, float]:
-	processed = preprocess_data(df, target_column=target_column, id_column=id_column, random_state=random_state)
+	processed = preprocess_data(
+		df,
+		target_column=target_column,
+		id_column=id_column,
+		random_state=random_state,
+		scale_features=False,
+	)
 	X_train_raw = processed["X_train"]
 	X_test_raw = processed["X_test"]
-	X_train, X_test, y_train, y_test = unpack_processed_arrays(processed)
+	y_train = processed["y_train"].to_numpy().astype(np.int32)
+	y_test = processed["y_test"].to_numpy().astype(np.int32)
 	if not set(np.unique(y_train)).issubset({0, 1}) or not set(np.unique(y_test)).issubset({0, 1}):
 		raise ValueError("Bu script binary etiket bekliyor. Label degerleri sadece 0 ve 1 olmali.")
 
-	print(f"[INFO] X_train shape: {X_train.shape}")
-	print(f"[INFO] X_test shape : {X_test.shape}")
+	print(f"[INFO] X_train shape: {X_train_raw.shape}")
+	print(f"[INFO] X_test shape : {X_test_raw.shape}")
+
+	if should_use_feature_chunking(
+		feature_count=X_train_raw.shape[1],
+		chunk_feature_threshold=chunk_feature_threshold,
+		feature_chunk_size=feature_chunk_size,
+		enable_feature_chunking=enable_feature_chunking,
+	):
+		return run_chunked_binary_experiment(
+			df=df,
+			processed=processed,
+			dataset_folder=dataset_folder,
+			target_column=target_column,
+			id_column=id_column,
+			encoding_dim=encoding_dim,
+			feature_percent=feature_percent,
+			random_state=random_state,
+			classifier_epochs=classifier_epochs,
+			classifier_hidden_units=classifier_hidden_units,
+			classifier_dropout_rates=classifier_dropout_rates,
+			classifier_learning_rate=classifier_learning_rate,
+			feature_chunk_size=feature_chunk_size,
+			current_class_label=current_class_label,
+			class_counts=class_counts,
+		)
+
+	X_train, X_test, _ = scale_data(X_train_raw, X_test_raw)
+	X_train = X_train.astype(np.float32)
+	X_test = X_test.astype(np.float32)
 
 	test_mse, test_accuracy, autoencoder, _, X_train_sub_used = train_and_evaluate_pipeline(
 		X_train,
@@ -423,6 +681,9 @@ def run_multiclass_one_vs_rest(
 	classifier_hidden_units: tuple[int, ...],
 	classifier_dropout_rates: tuple[float, ...] | None,
 	classifier_learning_rate: float,
+	feature_chunk_size: int,
+	chunk_feature_threshold: int,
+	enable_feature_chunking: bool,
 ) -> tuple[float, float]:
 	class_labels = sorted(df[target_column].dropna().unique().tolist())
 	if len(class_labels) <= 2:
@@ -455,21 +716,28 @@ def run_multiclass_one_vs_rest(
 			classifier_hidden_units=classifier_hidden_units,
 			classifier_dropout_rates=classifier_dropout_rates,
 			classifier_learning_rate=classifier_learning_rate,
+			feature_chunk_size=feature_chunk_size,
+			chunk_feature_threshold=chunk_feature_threshold,
+			enable_feature_chunking=enable_feature_chunking,
 			current_class_label=class_label,
 			class_counts=class_counts,
 		)
 
 	feature_percent_tag = format_feature_percent_tag(feature_percent)
-	macro_org_accuracy = compute_multiclass_macro_accuracy(
-		dataset_folder=dataset_folder,
-		class_labels=class_labels,
-		metric_filename="ORG_test_metrics.json",
-	)
+	filtered_metric_filename = f"top_{feature_percent_tag}_test_metrics.json"
 	macro_filtered_accuracy = compute_multiclass_macro_accuracy(
 		dataset_folder=dataset_folder,
 		class_labels=class_labels,
-		metric_filename=f"top_{feature_percent_tag}_test_metrics.json",
+		metric_filename=filtered_metric_filename,
 	)
+	try:
+		macro_org_accuracy = compute_multiclass_macro_accuracy(
+			dataset_folder=dataset_folder,
+			class_labels=class_labels,
+			metric_filename="ORG_test_metrics.json",
+		)
+	except FileNotFoundError:
+		macro_org_accuracy = macro_filtered_accuracy
 
 	output_dir = Path("outputs") / "autoencoder" / dataset_folder
 	metrics_dir = output_dir / "metrics"
@@ -516,6 +784,9 @@ def main(
 	classifier_dropout_rates: tuple[float, ...] | None = None,
 	classifier_learning_rate: float = 0.001,
 	device: str = "auto",
+	feature_chunk_size: int = DEFAULT_FEATURE_CHUNK_SIZE,
+	chunk_feature_threshold: int = DEFAULT_CHUNK_FEATURE_THRESHOLD,
+	enable_feature_chunking: bool = True,
 ) -> tuple[float, float]:
 	configure_tensorflow_device(device)
 	set_reproducible(random_state)
@@ -546,6 +817,9 @@ def main(
 			classifier_hidden_units=classifier_hidden_units,
 			classifier_dropout_rates=classifier_dropout_rates,
 			classifier_learning_rate=classifier_learning_rate,
+			feature_chunk_size=feature_chunk_size,
+			chunk_feature_threshold=chunk_feature_threshold,
+			enable_feature_chunking=enable_feature_chunking,
 		)
 
 	return run_binary_experiment(
@@ -560,6 +834,9 @@ def main(
 		classifier_hidden_units=classifier_hidden_units,
 		classifier_dropout_rates=classifier_dropout_rates,
 		classifier_learning_rate=classifier_learning_rate,
+		feature_chunk_size=feature_chunk_size,
+		chunk_feature_threshold=chunk_feature_threshold,
+		enable_feature_chunking=enable_feature_chunking,
 	)
 
 
@@ -575,6 +852,9 @@ def run_repeated_experiments(
 	classifier_dropout_rates: tuple[float, ...] | None,
 	classifier_learning_rate: float,
 	device: str,
+	feature_chunk_size: int,
+	chunk_feature_threshold: int,
+	enable_feature_chunking: bool,
 	repeat_runs: int,
 	accuracy_txt_path: Path,
 ) -> tuple[list[float], float]:
@@ -598,6 +878,9 @@ def run_repeated_experiments(
 			classifier_dropout_rates=classifier_dropout_rates,
 			classifier_learning_rate=classifier_learning_rate,
 			device=device,
+			feature_chunk_size=feature_chunk_size,
+			chunk_feature_threshold=chunk_feature_threshold,
+			enable_feature_chunking=enable_feature_chunking,
 		)
 		accuracy_values.append(float(filtered_test_accuracy))
 		accuracy_txt_path.write_text(str(accuracy_values), encoding="utf-8")
@@ -624,6 +907,9 @@ if __name__ == "__main__":
 	parser.add_argument("--classifier-dropout-rates", type=str, default="", help="Classifier dropout oranlari. Ornek: 0.3,0.2")
 	parser.add_argument("--classifier-learning-rate", type=float, default=0.001, help="Classifier ogrenme orani")
 	parser.add_argument("--device", type=str, default="auto", choices=["auto", "gpu", "cpu"], help="Cihaz secimi: auto, gpu veya cpu")
+	parser.add_argument("--feature-chunk-size", type=int, default=DEFAULT_FEATURE_CHUNK_SIZE, help="Buyuk feature setlerinde her parcadaki feature sayisi")
+	parser.add_argument("--chunk-feature-threshold", type=int, default=DEFAULT_CHUNK_FEATURE_THRESHOLD, help="Feature sayisi bu esigi asarsa parcali akis kullanilir")
+	parser.add_argument("--disable-feature-chunking", action="store_true", help="Buyuk feature setlerinde otomatik parcali akisi kapatir")
 
 
 	args = parser.parse_args()
@@ -636,6 +922,10 @@ if __name__ == "__main__":
 		raise ValueError("classifier-epochs pozitif tam sayi olmali.")
 	if args.classifier_learning_rate <= 0:
 		raise ValueError("classifier-learning-rate pozitif olmali.")
+	if args.feature_chunk_size <= 0:
+		raise ValueError("feature-chunk-size pozitif tam sayi olmali.")
+	if args.chunk_feature_threshold <= 0:
+		raise ValueError("chunk-feature-threshold pozitif tam sayi olmali.")
 
 	if args.accuracy_list_txt.strip():
 		accuracy_txt_path = Path(args.accuracy_list_txt)
@@ -658,6 +948,9 @@ if __name__ == "__main__":
 		classifier_dropout_rates=classifier_dropout_rates,
 		classifier_learning_rate=args.classifier_learning_rate,
 		device=args.device,
+		feature_chunk_size=args.feature_chunk_size,
+		chunk_feature_threshold=args.chunk_feature_threshold,
+		enable_feature_chunking=not args.disable_feature_chunking,
 		repeat_runs=args.repeat_runs,
 		accuracy_txt_path=accuracy_txt_path,
 	)

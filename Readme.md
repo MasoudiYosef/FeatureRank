@@ -173,3 +173,13 @@ MULTİ CLASS MODEL:
         "label_1": 28   # Test (%20)
     }
 }
+
+
+BÜYÜK VERİLERDE;
+    100000 feature 
+        -> 100 parçaya böl
+        -> her 1000 feature için autoencoder çalıştır
+        -> her parçadan en iyi %20 al (Ağırlık listesine bakarak)
+        -> yaklaşık 20000 feature birleştir
+        -> final autoencoder + classifier çalıştır
+        -> final accuracy ver
