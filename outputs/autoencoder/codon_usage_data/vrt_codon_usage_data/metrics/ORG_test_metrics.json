@@ -1,6 +1,6 @@
 {
-    "test_mse": 5.925897121429443,
-    "test_accuracy": 0.9593246354566385,
+    "test_mse": 0.670692503452301,
+    "test_accuracy": 0.965464313123561,
     "threshold": 0.5,
     "current_class_label": "vrt",
     "class_counts": {

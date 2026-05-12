@@ -1,0 +1,9 @@
+{
+    "task": "clustering",
+    "feature_percent": 30.0,
+    "original_feature_count": 67,
+    "selected_feature_count": 21,
+    "cluster_k": 11,
+    "silhouette_score": 0.1338459849357605,
+    "inertia": 123302.390625
+}

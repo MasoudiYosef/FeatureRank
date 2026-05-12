@@ -1,0 +1,25 @@
+{
+    "feature_percent": 60.0,
+    "selected_feature_count": 41,
+    "test_mse": 0.6021149754524231,
+    "test_accuracy": 0.9892555640828856,
+    "threshold": 0.5,
+    "current_class_label": "arc",
+    "class_counts": {
+        "arc": 126,
+        "bct": 2920,
+        "inv": 1345,
+        "mam": 572,
+        "phg": 220,
+        "plm": 18,
+        "pln": 2523,
+        "pri": 180,
+        "rod": 215,
+        "vrl": 2832,
+        "vrt": 2077
+    },
+    "binary_label_counts": {
+        "label_0": 13,
+        "label_1": 1290
+    }
+}

@@ -1,0 +1,25 @@
+{
+    "feature_percent": 30.0,
+    "selected_feature_count": 21,
+    "test_mse": 0.592544674873352,
+    "test_accuracy": 0.9470452801227935,
+    "threshold": 0.5,
+    "current_class_label": "vrt",
+    "class_counts": {
+        "arc": 126,
+        "bct": 2920,
+        "inv": 1345,
+        "mam": 572,
+        "phg": 220,
+        "plm": 18,
+        "pln": 2523,
+        "pri": 180,
+        "rod": 215,
+        "vrl": 2832,
+        "vrt": 2077
+    },
+    "binary_label_counts": {
+        "label_0": 208,
+        "label_1": 1095
+    }
+}

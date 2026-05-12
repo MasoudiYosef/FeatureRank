@@ -1,6 +1,6 @@
 {
-    "test_mse": 5.788742542266846,
-    "test_accuracy": 0.9907904834996163,
+    "test_mse": 0.6181194186210632,
+    "test_accuracy": 0.990023023791251,
     "threshold": 0.5,
     "current_class_label": "arc",
     "class_counts": {

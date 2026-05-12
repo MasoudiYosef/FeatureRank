@@ -1,6 +1,6 @@
 {
-    "test_mse": 0.6702347993850708,
-    "test_accuracy": 0.9401381427475057,
+    "test_mse": 0.6504592895507812,
+    "test_accuracy": 0.9416730621642364,
     "threshold": 0.5,
     "current_class_label": "inv",
     "class_counts": {
