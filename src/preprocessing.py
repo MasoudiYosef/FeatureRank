@@ -47,8 +47,13 @@ def encode_target(df: pd.DataFrame, target_column: str = TARGET_COLUMN) -> pd.Da
         return df
 
     if pd.api.types.is_numeric_dtype(y):
-        # Sayısal target'ta sınıfları olduğu gibi koru; sadece int'e çevir.
-        df[target_column] = y.astype(int)
+        y_int = y.astype(int)
+        unique_labels = sorted(pd.Series(y_int).dropna().unique().tolist())
+        if len(unique_labels) == 2 and set(unique_labels) != {0, 1}:
+            label_map = {label: idx for idx, label in enumerate(unique_labels)}
+            df[target_column] = y_int.map(label_map).astype(int)
+            return df
+        df[target_column] = y_int
         return df
 
     y_str = y.astype(str).str.strip()
