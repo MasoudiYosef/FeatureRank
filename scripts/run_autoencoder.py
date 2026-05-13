@@ -177,7 +177,7 @@ def save_training_history(
 ) -> None:
 	ensure_dir(output_dir)
 	history_df = pd.DataFrame(history.history)
-	history_df = history_df.drop(columns=["val_accuracy"], errors="ignore")
+	history_df = history_df.drop(columns=["val_accuracy", "val_loss"], errors="ignore")
 	history_df.insert(0, "epoch", np.arange(1, len(history_df) + 1))
 
 	csv_path = output_dir / f"{file_prefix}_history.csv"
@@ -190,9 +190,6 @@ def save_training_history(
 
 		plt.figure(figsize=(8, 5))
 		plt.plot(history_df["epoch"], history_df[metric], label=metric)
-		val_metric = f"val_{metric}"
-		if metric != "accuracy" and val_metric in history_df.columns:
-			plt.plot(history_df["epoch"], history_df[val_metric], label=val_metric)
 		plt.xlabel("Epoch")
 		plt.ylabel(metric)
 		plt.title(f"{file_prefix} {metric}")
@@ -204,6 +201,129 @@ def save_training_history(
 		plt.savefig(plot_path, dpi=150)
 		plt.close()
 		print(f"[OK] Training plot: {plot_path}")
+
+
+def save_average_convergence(
+	history_frames: list[pd.DataFrame],
+	output_dir: Path,
+	file_prefix: str,
+) -> None:
+	if not history_frames:
+		return
+
+	ensure_dir(output_dir)
+	accuracy_series: list[pd.Series] = []
+	loss_series: list[pd.Series] = []
+
+	for history_df in history_frames:
+		if "epoch" not in history_df.columns:
+			continue
+		indexed_history = history_df.set_index("epoch")
+		if "accuracy" in indexed_history.columns:
+			accuracy_series.append(indexed_history["accuracy"])
+		if "loss" in indexed_history.columns:
+			loss_series.append(indexed_history["loss"])
+
+	if not accuracy_series:
+		return
+
+	average_df = pd.DataFrame({"epoch": sorted(set().union(*(series.index for series in accuracy_series)))})
+	average_df = average_df.set_index("epoch")
+	average_df["average_accuracy"] = pd.concat(accuracy_series, axis=1).mean(axis=1)
+	if loss_series:
+		average_df["average_loss"] = pd.concat(loss_series, axis=1).mean(axis=1)
+	average_df = average_df.reset_index()
+
+	csv_path = output_dir / f"{file_prefix}_average_convergence.csv"
+	average_df.to_csv(csv_path, index=False)
+	print(f"[OK] Average convergence CSV: {csv_path}")
+
+	plt.figure(figsize=(8, 5))
+	plt.plot(average_df["epoch"], average_df["average_accuracy"], label="average_accuracy")
+	plt.xlabel("Epoch")
+	plt.ylabel("Average Accuracy")
+	plt.title(f"{file_prefix} average accuracy convergence")
+	plt.legend()
+	plt.grid(True, alpha=0.3)
+	plt.tight_layout()
+	accuracy_plot_path = output_dir / f"{file_prefix}_average_accuracy_convergence.png"
+	plt.savefig(accuracy_plot_path, dpi=150)
+	plt.close()
+	print(f"[OK] Average accuracy convergence plot: {accuracy_plot_path}")
+
+	if "average_loss" in average_df.columns:
+		plt.figure(figsize=(8, 5))
+		plt.plot(average_df["epoch"], average_df["average_loss"], label="average_loss")
+		plt.xlabel("Epoch")
+		plt.ylabel("Average Loss")
+		plt.title(f"{file_prefix} average error convergence")
+		plt.legend()
+		plt.grid(True, alpha=0.3)
+		plt.tight_layout()
+		loss_plot_path = output_dir / f"{file_prefix}_average_error_convergence.png"
+		plt.savefig(loss_plot_path, dpi=150)
+		plt.close()
+		print(f"[OK] Average error convergence plot: {loss_plot_path}")
+
+
+def save_metric_boxplot(
+	metric_values: list[float],
+	output_dir: Path,
+	file_prefix: str,
+	metric_name: str,
+) -> None:
+	if not metric_values:
+		return
+
+	ensure_dir(output_dir)
+	metric_label = metric_name.lower()
+	plt.figure(figsize=(6, 5))
+	plt.boxplot(metric_values, labels=[metric_name], showmeans=True)
+	plt.ylabel(metric_name)
+	plt.title(f"{file_prefix} {metric_label} boxplot")
+	plt.grid(True, axis="y", alpha=0.3)
+	plt.tight_layout()
+
+	plot_path = output_dir / f"{file_prefix}_{metric_label}_boxplot.png"
+	plt.savefig(plot_path, dpi=150)
+	plt.close()
+	print(f"[OK] {metric_name} boxplot: {plot_path}")
+
+
+def extract_final_history_metric_values(history_frames: list[pd.DataFrame], metric_name: str) -> list[float]:
+	values: list[float] = []
+	for history_df in history_frames:
+		if metric_name not in history_df.columns or history_df.empty:
+			continue
+		metric_values = history_df[metric_name].dropna()
+		if metric_values.empty:
+			continue
+		values.append(float(metric_values.iloc[-1]))
+	return values
+
+
+def collect_repeated_run_history(
+	dataset_folder: str,
+	feature_percent: float,
+	run_idx: int,
+) -> pd.DataFrame | None:
+	feature_percent_tag = format_feature_percent_tag(feature_percent)
+	history_dir = Path("outputs") / "autoencoder" / dataset_folder / "training_history"
+	candidates = [
+		history_dir / f"top_{feature_percent_tag}_classifier_history.csv",
+		history_dir / f"chunked_top_{feature_percent_tag}_final_classifier_history.csv",
+	]
+	for history_path in candidates:
+		if not history_path.exists():
+			continue
+		history_df = pd.read_csv(history_path)
+		run_history_path = history_dir / f"run_{run_idx:03d}_{history_path.name}"
+		history_df.to_csv(run_history_path, index=False)
+		print(f"[OK] Run epoch history kaydedildi: {run_history_path}")
+		return history_df
+
+	print(f"[WARN] Run {run_idx} icin classifier history bulunamadi: {history_dir}")
+	return None
 
 
 def unpack_processed_arrays(processed: dict) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
@@ -1334,6 +1454,8 @@ def run_repeated_experiments(
 	Sonuc: (metric_values, average_metric)
 	"""
 	accuracy_values: list[float] = []
+	history_frames: list[pd.DataFrame] = []
+	dataset_folder = Path(convert_txt_dataset_to_csv(dataset_name)).stem
 
 	for run_idx in range(1, repeat_runs + 1):
 		print(f"\n[INFO] Calisma {run_idx}/{repeat_runs} basladi.")
@@ -1358,6 +1480,14 @@ def run_repeated_experiments(
 			save_training_plots=save_training_plots,
 		)
 		accuracy_values.append(float(filtered_test_accuracy))
+		if save_training_plots and task == "classification":
+			history_df = collect_repeated_run_history(
+				dataset_folder=dataset_folder,
+				feature_percent=feature_percent,
+				run_idx=run_idx,
+			)
+			if history_df is not None:
+				history_frames.append(history_df)
 		sorted_accuracy_values = sorted(accuracy_values, reverse=True)
 		accuracy_txt_path.write_text(
 			f"{accuracy_values}\nSirali {metric_name}: {sorted_accuracy_values}",
@@ -1372,6 +1502,35 @@ def run_repeated_experiments(
 		f"Ortalama {metric_name}: {average_accuracy:.6f}"
 	)
 	accuracy_txt_path.write_text(output_text, encoding="utf-8")
+
+	feature_percent_tag = format_feature_percent_tag(feature_percent)
+	if task == "clustering":
+		plot_output_dir = Path("outputs") / "clustering" / dataset_folder / "metrics"
+		boxplot_metric_name = "Silhouette"
+	else:
+		plot_output_dir = Path("outputs") / "autoencoder" / dataset_folder / "metrics"
+		boxplot_metric_name = "Accuracy"
+	save_metric_boxplot(
+		metric_values=accuracy_values,
+		output_dir=plot_output_dir,
+		file_prefix=f"top_{feature_percent_tag}",
+		metric_name=boxplot_metric_name,
+	)
+
+	if save_training_plots and task == "classification" and history_frames:
+		history_dir = Path("outputs") / "autoencoder" / dataset_folder / "training_history"
+		save_average_convergence(
+			history_frames=history_frames,
+			output_dir=history_dir,
+			file_prefix=f"top_{feature_percent_tag}",
+		)
+		final_loss_values = extract_final_history_metric_values(history_frames, "loss")
+		save_metric_boxplot(
+			metric_values=final_loss_values,
+			output_dir=plot_output_dir,
+			file_prefix=f"top_{feature_percent_tag}",
+			metric_name="Loss",
+		)
 
 	return accuracy_values, average_accuracy
 
