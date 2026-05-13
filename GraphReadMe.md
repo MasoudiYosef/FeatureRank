@@ -66,12 +66,16 @@ Modelin ortalama hatası tekrarlar boyunca epoch ilerledikçe azalıyor mu?
 
 Makale için önemli çünkü tek eğitim değil, çoklu çalıştırma ortalamasına göre yakınsamayı gösterir.
 
-5. Boxplot Grafiği
+Boxplot Grafikleri
+
+Boxplot grafikleri, modelin tekrar eden çalıştırmalarda ne kadar kararlı davrandığını göstermek için kullanılır. Senin kodunda boxplot’lar --repeat-runs ile yapılan çoklu çalıştırmaların sonuçlarından üretilir.
+
+1. Accuracy Boxplot
 
 Dosya örneği:
 
 top_40_accuracy_boxplot.png
-Görevi: 50 tekrar sonunda elde edilen final accuracy değerlerinin dağılımını gösterir.
+Bu grafik, 50 tekrar sonunda elde edilen final accuracy değerlerinin dağılımını gösterir.
 
 Yani:
 
@@ -79,23 +83,43 @@ run_1 final accuracy
 run_2 final accuracy
 ...
 run_50 final accuracy
-üzerinden çizilir.
+değerleri kullanılır.
 
-Bu grafik şunları gösterir:
+Bu grafik şu soruya cevap verir:
 
-minimum accuracy
-maksimum accuracy
-medyan
-ortalama
-çeyrekler
-aykırı değerler
-Bu grafik şunu cevaplar:
+Model farklı çalıştırmalarda benzer başarı değerleri veriyor mu?
 
-Modelin başarısı farklı çalıştırmalarda kararlı mı?
+Dar bir boxplot, accuracy değerlerinin birbirine yakın olduğunu ve modelin kararlı çalıştığını gösterir. Geniş bir boxplot ise model başarısının çalıştırmadan çalıştırmaya değiştiğini gösterir.
 
-Dar bir boxplot: model kararlı.
-Geniş bir boxplot: sonuçlar değişken.
-Aykırı değer çoksa: bazı çalıştırmalarda model farklı davranıyor.
+2. Loss Boxplot
+
+Dosya örneği:
+
+top_40_loss_boxplot.png
+Bu grafik, 50 tekrar sonunda her çalıştırmanın son epoch’undaki final loss değerlerinin dağılımını gösterir.
+
+Yani:
+
+run_1 final loss
+run_2 final loss
+...
+run_50 final loss
+değerleri kullanılır.
+
+Bu grafik şu soruya cevap verir:
+
+Model farklı çalıştırmalarda benzer hata seviyesine yakınsıyor mu?
+
+Düşük ve dar bir loss boxplot, modelin tekrarlar boyunca benzer ve düşük hata seviyesine ulaştığını gösterir. Geniş bir loss boxplot, bazı çalıştırmalarda modelin daha yüksek hata ile sonuçlandığını ve eğitimin kararlılığının daha zayıf olabileceğini gösterir.
+
+Kısaca
+
+Accuracy boxplot
+→ 50 tekrar sonunda başarı değerleri kararlı mı? 
+
+Loss boxplot
+→ 50 tekrar sonunda hata değerleri kararlı mı? (Son loss değerleri alınır)
+Bu iki grafik birlikte kullanıldığında modelin hem performans hem de hata açısından tekrar edilebilirliğini gösterir.
 
 6. Clustering Silhouette Boxplot
 
@@ -125,5 +149,6 @@ Average accuracy convergence
 Average error convergence
 → Çoklu tekrarların ortalama hata azalması nasıl?
 
-Boxplot
+Boxplot(Accuracy-Loss)
 → 50 tekrar sonunda başarı değerleri kararlı mı?
+→ 50 tekrar sonunda hata değerleri kararlı mı? 
