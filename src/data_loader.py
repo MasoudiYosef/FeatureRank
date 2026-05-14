@@ -125,6 +125,8 @@ def _parse_sparse_index_feature_file(path: Path) -> pd.DataFrame | None:
             return None
 
         indices = [int(part) for part in parts]
+        if any(index <= 0 for index in indices):
+            return None
         parsed_rows.append(indices)
         sparse_like_count += 1
         row_max = max(indices)
@@ -149,11 +151,13 @@ def _parse_sparse_index_feature_file(path: Path) -> pd.DataFrame | None:
 def _read_csv_flexible(path, is_feature_file: bool = False) -> pd.DataFrame:
     try:
         if is_feature_file:
-            sparse_df = _parse_sparse_index_feature_file(Path(path))
-            if sparse_df is not None:
-                return sparse_df
+            path_obj = Path(path)
+            if path_obj.stem.lower().startswith("dorothea"):
+                sparse_df = _parse_sparse_index_feature_file(path_obj)
+                if sparse_df is not None:
+                    return sparse_df
 
-            df = pd.read_csv(path, header=None)
+            df = pd.read_csv(path, header=None, dtype=np.float32)
             df.columns = [f"feature_{i+1}" for i in range(df.shape[1])]
             return df
 

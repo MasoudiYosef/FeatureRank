@@ -1244,6 +1244,7 @@ def run_multiclass_one_vs_rest(
 	feature_chunk_size: int,
 	chunk_feature_threshold: int,
 	enable_feature_chunking: bool,
+	save_training_plots: bool = False,
 ) -> tuple[float, float]:
 	class_labels = sorted(df[target_column].dropna().unique().tolist())
 	if len(class_labels) <= 2:
@@ -1405,6 +1406,7 @@ def main(
 			feature_chunk_size=feature_chunk_size,
 			chunk_feature_threshold=chunk_feature_threshold,
 			enable_feature_chunking=enable_feature_chunking,
+			save_training_plots=save_training_plots,
 		)
 
 	return run_binary_experiment(
