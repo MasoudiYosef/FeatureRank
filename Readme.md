@@ -1,6 +1,17 @@
-- "python3 -m venv .venv" => Bu komut proje içinde .venv klasörü oluşturur.
-- "source .venv/bin/activate "
-" => Başarılı olursa terminalin başında genelde şöyle bir şey görünür: (.venv) 
+OTOMATIK ORTAM KURULUMU:
+ - "bash scripts/setup_environment.sh" => Python 3.13.5 kontrol eder, pyenv varsa eksikse kurar, .venv oluşturur ve requirements.txt paketlerini yükler.
+ - "source .venv/bin/activate" => Kurulumdan sonra sanal ortamı aktif eder.
+
+MANUEL ORTAM KURULUMU:
+ - "python3 --version" => Python sürümünü kontrol et. Bu proje için önerilen sürüm Python 3.13.5.
+ - "python3 -m venv .venv" => Bu komut proje içinde .venv klasörü oluşturur.
+ - "source .venv/bin/activate" => Başarılı olursa terminalin başında genelde şöyle bir şey görünür: (.venv)
+ - "python --version" => Sanal ortam içinde de Python sürümünün doğru olduğunu kontrol et.
+
+TENSORFLOW KURULUM HATASI:
+ - "No matching distribution found for tensorflow==2.21.0" hatası genelde Python sürümü veya işletim sistemi/platform uyumsuzluğundan olur.
+ - Manuel kurulumda "python3" komutu Python 3.13.5 değilse önce "bash scripts/setup_environment.sh" komutunu kullan.
+ - Eski/yanlış .venv oluşturulduysa klasörü silip ortamı yeniden kur.
 
 Kurulan Kütüphaneler :
  - "pip install -r requirements.txt" => CPU ile çalışmak için
