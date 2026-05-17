@@ -1,8 +1,8 @@
 {
     "feature_percent": 60.0,
     "selected_feature_count": 41,
-    "test_mse": 0.6134213805198669,
-    "test_accuracy": 0.9685341519570223,
+    "test_mse": 0.6241832375526428,
+    "test_accuracy": 0.9631619339984651,
     "threshold": 0.5,
     "current_class_label": "mam",
     "class_counts": {

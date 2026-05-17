@@ -1,8 +1,8 @@
 {
     "feature_percent": 60.0,
     "selected_feature_count": 41,
-    "test_mse": 0.6275461316108704,
-    "test_accuracy": 0.9616270145817345,
+    "test_mse": 0.6509358882904053,
+    "test_accuracy": 0.9508825786646201,
     "threshold": 0.5,
     "current_class_label": "vrt",
     "class_counts": {

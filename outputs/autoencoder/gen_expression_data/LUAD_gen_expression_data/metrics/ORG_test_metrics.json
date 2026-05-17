@@ -1,6 +1,6 @@
 {
-    "test_mse": 0.9998363256454468,
-    "test_accuracy": 0.9259259259259259,
+    "test_mse": 1.0002504587173462,
+    "test_accuracy": 0.9382716049382716,
     "threshold": 0.5,
     "current_class_label": "LUAD",
     "class_counts": {

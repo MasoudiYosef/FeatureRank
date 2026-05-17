@@ -1,8 +1,8 @@
 {
     "feature_percent": 60.0,
     "selected_feature_count": 41,
-    "test_mse": 0.6021149754524231,
-    "test_accuracy": 0.9892555640828856,
+    "test_mse": 0.6291220188140869,
+    "test_accuracy": 0.990023023791251,
     "threshold": 0.5,
     "current_class_label": "arc",
     "class_counts": {

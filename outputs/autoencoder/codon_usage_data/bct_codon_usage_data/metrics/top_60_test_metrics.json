@@ -1,8 +1,8 @@
 {
     "feature_percent": 60.0,
     "selected_feature_count": 41,
-    "test_mse": 0.619586169719696,
-    "test_accuracy": 0.9424405218726016,
+    "test_mse": 0.6334627866744995,
+    "test_accuracy": 0.9485801995395242,
     "threshold": 0.5,
     "current_class_label": "bct",
     "class_counts": {

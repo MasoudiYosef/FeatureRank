@@ -2,6 +2,7 @@ import os
 import sys
 import argparse
 import random
+import json
 from pathlib import Path
 
 import numpy as np
@@ -44,6 +45,11 @@ DEFAULT_FEATURE_CHUNK_SIZE = 1000
 DEFAULT_CHUNK_FEATURE_THRESHOLD = 50000
 DEFAULT_CLUSTER_MIN_K = 2
 DEFAULT_CLUSTER_MAX_K = 10
+DEFAULT_EARLY_STOPPING_PATIENCE = 3
+DEFAULT_AUTOENCODER_EARLY_STOPPING_PATIENCE = 0
+DEFAULT_EARLY_STOPPING_MIN_DELTA = 0.0
+DEFAULT_AUTOENCODER_EARLY_STOPPING_MIN_DELTA = 0.001
+DEFAULT_CLASSIFIER_EARLY_STOPPING_MONITOR = "val_accuracy"
 
 
 def set_reproducible(seed: int | None) -> None:
@@ -177,7 +183,6 @@ def save_training_history(
 ) -> None:
 	ensure_dir(output_dir)
 	history_df = pd.DataFrame(history.history)
-	history_df = history_df.drop(columns=["val_accuracy", "val_loss"], errors="ignore")
 	history_df.insert(0, "epoch", np.arange(1, len(history_df) + 1))
 
 	csv_path = output_dir / f"{file_prefix}_history.csv"
@@ -190,6 +195,9 @@ def save_training_history(
 
 		plt.figure(figsize=(8, 5))
 		plt.plot(history_df["epoch"], history_df[metric], label=metric)
+		val_metric = f"val_{metric}"
+		if val_metric in history_df.columns:
+			plt.plot(history_df["epoch"], history_df[val_metric], label=val_metric)
 		plt.xlabel("Epoch")
 		plt.ylabel(metric)
 		plt.title(f"{file_prefix} {metric}")
@@ -213,7 +221,9 @@ def save_average_convergence(
 
 	ensure_dir(output_dir)
 	accuracy_series: list[pd.Series] = []
+	val_accuracy_series: list[pd.Series] = []
 	loss_series: list[pd.Series] = []
+	val_loss_series: list[pd.Series] = []
 
 	for history_df in history_frames:
 		if "epoch" not in history_df.columns:
@@ -221,8 +231,12 @@ def save_average_convergence(
 		indexed_history = history_df.set_index("epoch")
 		if "accuracy" in indexed_history.columns:
 			accuracy_series.append(indexed_history["accuracy"])
+		if "val_accuracy" in indexed_history.columns:
+			val_accuracy_series.append(indexed_history["val_accuracy"])
 		if "loss" in indexed_history.columns:
 			loss_series.append(indexed_history["loss"])
+		if "val_loss" in indexed_history.columns:
+			val_loss_series.append(indexed_history["val_loss"])
 
 	if not accuracy_series:
 		return
@@ -230,8 +244,12 @@ def save_average_convergence(
 	average_df = pd.DataFrame({"epoch": sorted(set().union(*(series.index for series in accuracy_series)))})
 	average_df = average_df.set_index("epoch")
 	average_df["average_accuracy"] = pd.concat(accuracy_series, axis=1).mean(axis=1)
+	if val_accuracy_series:
+		average_df["average_val_accuracy"] = pd.concat(val_accuracy_series, axis=1).mean(axis=1)
 	if loss_series:
 		average_df["average_loss"] = pd.concat(loss_series, axis=1).mean(axis=1)
+	if val_loss_series:
+		average_df["average_val_loss"] = pd.concat(val_loss_series, axis=1).mean(axis=1)
 	average_df = average_df.reset_index()
 
 	csv_path = output_dir / f"{file_prefix}_average_convergence.csv"
@@ -240,6 +258,8 @@ def save_average_convergence(
 
 	plt.figure(figsize=(8, 5))
 	plt.plot(average_df["epoch"], average_df["average_accuracy"], label="average_accuracy")
+	if "average_val_accuracy" in average_df.columns:
+		plt.plot(average_df["epoch"], average_df["average_val_accuracy"], label="average_val_accuracy")
 	plt.xlabel("Epoch")
 	plt.ylabel("Average Accuracy")
 	plt.title(f"{file_prefix} average accuracy convergence")
@@ -254,6 +274,8 @@ def save_average_convergence(
 	if "average_loss" in average_df.columns:
 		plt.figure(figsize=(8, 5))
 		plt.plot(average_df["epoch"], average_df["average_loss"], label="average_loss")
+		if "average_val_loss" in average_df.columns:
+			plt.plot(average_df["epoch"], average_df["average_val_loss"], label="average_val_loss")
 		plt.xlabel("Epoch")
 		plt.ylabel("Average Loss")
 		plt.title(f"{file_prefix} average error convergence")
@@ -326,6 +348,69 @@ def collect_repeated_run_history(
 	return None
 
 
+def collect_repeated_multiclass_run_history(
+	dataset_folder: str,
+	feature_percent: float,
+	run_idx: int,
+) -> pd.DataFrame | None:
+	feature_percent_tag = format_feature_percent_tag(feature_percent)
+	metrics_path = (
+		Path("outputs")
+		/ "autoencoder"
+		/ dataset_folder
+		/ "metrics"
+		/ f"top_{feature_percent_tag}_test_metrics.json"
+	)
+	if not metrics_path.exists():
+		print(f"[WARN] Multiclass metrics dosyasi bulunamadi: {metrics_path}")
+		return None
+
+	with open(metrics_path, "r", encoding="utf-8") as f:
+		metrics = json.load(f)
+
+	if not metrics.get("macro_average"):
+		return None
+
+	class_labels = metrics.get("class_labels", [])
+	if not class_labels:
+		print(f"[WARN] Multiclass class_labels bos: {metrics_path}")
+		return None
+
+	class_history_frames: list[pd.DataFrame] = []
+	for class_label in class_labels:
+		binary_dataset_folder = f"{class_label}_{dataset_folder}"
+		history_dir = Path("outputs") / "autoencoder" / dataset_folder / binary_dataset_folder / "training_history"
+		candidates = [
+			history_dir / f"top_{feature_percent_tag}_classifier_history.csv",
+			history_dir / f"chunked_top_{feature_percent_tag}_final_classifier_history.csv",
+		]
+		for history_path in candidates:
+			if not history_path.exists():
+				continue
+			history_df = pd.read_csv(history_path)
+			run_history_path = history_dir / f"run_{run_idx:03d}_{history_path.name}"
+			history_df.to_csv(run_history_path, index=False)
+			class_history_frames.append(history_df)
+			break
+
+	if not class_history_frames:
+		print(f"[WARN] Run {run_idx} icin multiclass classifier history bulunamadi: {dataset_folder}")
+		return None
+
+	combined_history = pd.concat(class_history_frames, ignore_index=True)
+	metric_columns = [col for col in ["accuracy", "val_accuracy", "loss", "val_loss"] if col in combined_history.columns]
+	if "epoch" not in combined_history.columns or not metric_columns:
+		return None
+
+	macro_history = combined_history.groupby("epoch", as_index=False)[metric_columns].mean()
+	history_dir = Path("outputs") / "autoencoder" / dataset_folder / "training_history"
+	ensure_dir(history_dir)
+	run_macro_path = history_dir / f"run_{run_idx:03d}_top_{feature_percent_tag}_macro_classifier_history.csv"
+	macro_history.to_csv(run_macro_path, index=False)
+	print(f"[OK] Multiclass run macro epoch history kaydedildi: {run_macro_path}")
+	return macro_history
+
+
 def unpack_processed_arrays(processed: dict) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
 	"""Unpack processed data and ensure consistent float32 dtype for TensorFlow."""
 	X_train = processed["X_train_scaled"].astype(np.float32)
@@ -347,6 +432,8 @@ def train_autoencoder_model(
 	X_val: np.ndarray,
 	X_eval: np.ndarray,
 	encoding_dim: int,
+	early_stopping_patience: int | None = None,
+	early_stopping_min_delta: float = DEFAULT_AUTOENCODER_EARLY_STOPPING_MIN_DELTA,
 	history_output_dir: Path | None = None,
 	history_prefix: str | None = None,
 ) -> tuple[float, tf.keras.Model, tf.keras.Model]:
@@ -359,6 +446,19 @@ def train_autoencoder_model(
 	# Ensure consistent dtypes
 	X_train_sub = X_train_sub.astype(np.float32)
 	X_val = X_val.astype(np.float32)
+
+	callbacks: list[tf.keras.callbacks.Callback] = []
+	if early_stopping_patience is not None and early_stopping_patience > 0:
+		callbacks.append(
+			tf.keras.callbacks.EarlyStopping(
+				monitor="val_loss",
+				patience=early_stopping_patience,
+				min_delta=early_stopping_min_delta,
+				restore_best_weights=True,
+				mode="min",
+				verbose=1,
+			)
+		)
 	
 	autoencoder_history = autoencoder.fit(
 		X_train_sub,
@@ -367,6 +467,7 @@ def train_autoencoder_model(
 		epochs=AUTOENCODER_EPOCHS,
 		batch_size=BATCH_SIZE,
 		shuffle=True,
+		callbacks=callbacks,
 		verbose=1,
 	)
 	if history_output_dir is not None and history_prefix is not None:
@@ -393,6 +494,11 @@ def train_and_evaluate_pipeline(
 	classifier_hidden_units: tuple[int, ...],
 	classifier_dropout_rates: tuple[float, ...] | None,
 	classifier_learning_rate: float,
+	classifier_early_stopping_patience: int | None = None,
+	autoencoder_early_stopping_patience: int | None = None,
+	classifier_early_stopping_monitor: str = DEFAULT_CLASSIFIER_EARLY_STOPPING_MONITOR,
+	classifier_early_stopping_min_delta: float = DEFAULT_EARLY_STOPPING_MIN_DELTA,
+	autoencoder_early_stopping_min_delta: float = DEFAULT_AUTOENCODER_EARLY_STOPPING_MIN_DELTA,
 	history_output_dir: Path | None = None,
 	history_prefix: str | None = None,
 ) -> tuple[float, float, tf.keras.Model, tf.keras.Model, np.ndarray]:
@@ -410,6 +516,8 @@ def train_and_evaluate_pipeline(
 		X_val=X_val,
 		X_eval=X_test,
 		encoding_dim=encoding_dim,
+		early_stopping_patience=autoencoder_early_stopping_patience,
+		early_stopping_min_delta=autoencoder_early_stopping_min_delta,
 		history_output_dir=history_output_dir,
 		history_prefix=history_prefix,
 	)
@@ -435,6 +543,22 @@ def train_and_evaluate_pipeline(
 		raise ValueError(
 			f"Encoder output dim {X_train_encoded.shape[1]} != expected dim {encoder_output_dim}"
 		)
+
+	callbacks: list[tf.keras.callbacks.Callback] = []
+	if classifier_early_stopping_patience is not None and classifier_early_stopping_patience > 0:
+		if classifier_early_stopping_monitor not in {"val_loss", "val_accuracy"}:
+			raise ValueError("classifier early stopping monitor 'val_loss' veya 'val_accuracy' olmali.")
+		monitor_mode = "max" if classifier_early_stopping_monitor == "val_accuracy" else "min"
+		callbacks.append(
+			tf.keras.callbacks.EarlyStopping(
+				monitor=classifier_early_stopping_monitor,
+				patience=classifier_early_stopping_patience,
+				min_delta=classifier_early_stopping_min_delta,
+				restore_best_weights=True,
+				mode=monitor_mode,
+				verbose=1,
+			)
+		)
 	
 	classifier_history = classifier.fit(
 		X_train_encoded,
@@ -442,6 +566,7 @@ def train_and_evaluate_pipeline(
 		epochs=classifier_epochs,
 		batch_size=BATCH_SIZE,
 		validation_data=(X_val_encoded, y_val_fit),
+		callbacks=callbacks,
 		verbose=1,
 	)
 	if history_output_dir is not None and history_prefix is not None:
@@ -844,6 +969,11 @@ def run_chunked_binary_experiment(
 	classifier_hidden_units: tuple[int, ...],
 	classifier_dropout_rates: tuple[float, ...] | None,
 	classifier_learning_rate: float,
+	classifier_early_stopping_patience: int | None,
+	autoencoder_early_stopping_patience: int | None,
+	classifier_early_stopping_monitor: str,
+	classifier_early_stopping_min_delta: float,
+	autoencoder_early_stopping_min_delta: float,
 	feature_chunk_size: int,
 	save_training_plots: bool,
 	current_class_label: int | None = None,
@@ -904,6 +1034,11 @@ def run_chunked_binary_experiment(
 			classifier_hidden_units,
 			classifier_dropout_rates,
 			classifier_learning_rate,
+			classifier_early_stopping_patience,
+			autoencoder_early_stopping_patience,
+			classifier_early_stopping_monitor,
+			classifier_early_stopping_min_delta,
+			autoencoder_early_stopping_min_delta,
 			history_output_dir=history_dir if save_training_plots else None,
 			history_prefix=chunk_name if save_training_plots else None,
 		)
@@ -990,6 +1125,11 @@ def run_chunked_binary_experiment(
 		classifier_hidden_units,
 		classifier_dropout_rates,
 		classifier_learning_rate,
+		classifier_early_stopping_patience,
+		autoencoder_early_stopping_patience,
+		classifier_early_stopping_monitor,
+		classifier_early_stopping_min_delta,
+		autoencoder_early_stopping_min_delta,
 		history_output_dir=history_dir if save_training_plots else None,
 		history_prefix=f"chunked_top_{feature_percent_tag}_final" if save_training_plots else None,
 	)
@@ -1048,6 +1188,11 @@ def run_binary_experiment(
 	feature_chunk_size: int = DEFAULT_FEATURE_CHUNK_SIZE,
 	chunk_feature_threshold: int = DEFAULT_CHUNK_FEATURE_THRESHOLD,
 	enable_feature_chunking: bool = True,
+	classifier_early_stopping_patience: int | None = DEFAULT_EARLY_STOPPING_PATIENCE,
+	autoencoder_early_stopping_patience: int | None = DEFAULT_AUTOENCODER_EARLY_STOPPING_PATIENCE,
+	classifier_early_stopping_monitor: str = DEFAULT_CLASSIFIER_EARLY_STOPPING_MONITOR,
+	classifier_early_stopping_min_delta: float = DEFAULT_EARLY_STOPPING_MIN_DELTA,
+	autoencoder_early_stopping_min_delta: float = DEFAULT_AUTOENCODER_EARLY_STOPPING_MIN_DELTA,
 	save_training_plots: bool = False,
 	current_class_label: int | None = None,
 	class_counts: dict[int, int] | None = None,
@@ -1088,6 +1233,11 @@ def run_binary_experiment(
 				classifier_hidden_units=classifier_hidden_units,
 				classifier_dropout_rates=classifier_dropout_rates,
 				classifier_learning_rate=classifier_learning_rate,
+				classifier_early_stopping_patience=classifier_early_stopping_patience,
+				autoencoder_early_stopping_patience=autoencoder_early_stopping_patience,
+				classifier_early_stopping_monitor=classifier_early_stopping_monitor,
+				classifier_early_stopping_min_delta=classifier_early_stopping_min_delta,
+				autoencoder_early_stopping_min_delta=autoencoder_early_stopping_min_delta,
 				feature_chunk_size=feature_chunk_size,
 				save_training_plots=save_training_plots,
 				current_class_label=current_class_label,
@@ -1117,6 +1267,11 @@ def run_binary_experiment(
 		classifier_hidden_units,
 		classifier_dropout_rates,
 		classifier_learning_rate,
+		classifier_early_stopping_patience,
+		autoencoder_early_stopping_patience,
+		classifier_early_stopping_monitor,
+		classifier_early_stopping_min_delta,
+		autoencoder_early_stopping_min_delta,
 		history_output_dir=history_dir if save_training_plots else None,
 		history_prefix="ORG" if save_training_plots else None,
 	)
@@ -1165,6 +1320,11 @@ def run_binary_experiment(
 		classifier_hidden_units,
 		classifier_dropout_rates,
 		classifier_learning_rate,
+		classifier_early_stopping_patience,
+		autoencoder_early_stopping_patience,
+		classifier_early_stopping_monitor,
+		classifier_early_stopping_min_delta,
+		autoencoder_early_stopping_min_delta,
 		history_output_dir=history_dir if save_training_plots else None,
 		history_prefix=f"top_{feature_percent_tag}" if save_training_plots else None,
 	)
@@ -1242,6 +1402,11 @@ def run_multiclass_one_vs_rest(
 	classifier_dropout_rates: tuple[float, ...] | None,
 	classifier_learning_rate: float,
 	feature_chunk_size: int,
+	classifier_early_stopping_patience: int | None,
+	autoencoder_early_stopping_patience: int | None,
+	classifier_early_stopping_monitor: str,
+	classifier_early_stopping_min_delta: float,
+	autoencoder_early_stopping_min_delta: float,
 	chunk_feature_threshold: int,
 	enable_feature_chunking: bool,
 	save_training_plots: bool = False,
@@ -1277,6 +1442,11 @@ def run_multiclass_one_vs_rest(
 				classifier_hidden_units=classifier_hidden_units,
 				classifier_dropout_rates=classifier_dropout_rates,
 				classifier_learning_rate=classifier_learning_rate,
+				classifier_early_stopping_patience=classifier_early_stopping_patience,
+				autoencoder_early_stopping_patience=autoencoder_early_stopping_patience,
+				classifier_early_stopping_monitor=classifier_early_stopping_monitor,
+				classifier_early_stopping_min_delta=classifier_early_stopping_min_delta,
+				autoencoder_early_stopping_min_delta=autoencoder_early_stopping_min_delta,
 				feature_chunk_size=feature_chunk_size,
 				chunk_feature_threshold=chunk_feature_threshold,
 				enable_feature_chunking=enable_feature_chunking,
@@ -1350,6 +1520,11 @@ def main(
 	feature_chunk_size: int = DEFAULT_FEATURE_CHUNK_SIZE,
 	chunk_feature_threshold: int = DEFAULT_CHUNK_FEATURE_THRESHOLD,
 	enable_feature_chunking: bool = True,
+	classifier_early_stopping_patience: int | None = DEFAULT_EARLY_STOPPING_PATIENCE,
+	autoencoder_early_stopping_patience: int | None = DEFAULT_AUTOENCODER_EARLY_STOPPING_PATIENCE,
+	classifier_early_stopping_monitor: str = DEFAULT_CLASSIFIER_EARLY_STOPPING_MONITOR,
+	classifier_early_stopping_min_delta: float = DEFAULT_EARLY_STOPPING_MIN_DELTA,
+	autoencoder_early_stopping_min_delta: float = DEFAULT_AUTOENCODER_EARLY_STOPPING_MIN_DELTA,
 	cluster_min_k: int = DEFAULT_CLUSTER_MIN_K,
 	cluster_max_k: int = DEFAULT_CLUSTER_MAX_K,
 	save_training_plots: bool = False,
@@ -1403,6 +1578,11 @@ def main(
 			classifier_hidden_units=classifier_hidden_units,
 			classifier_dropout_rates=classifier_dropout_rates,
 			classifier_learning_rate=classifier_learning_rate,
+			classifier_early_stopping_patience=classifier_early_stopping_patience,
+			autoencoder_early_stopping_patience=autoencoder_early_stopping_patience,
+			classifier_early_stopping_monitor=classifier_early_stopping_monitor,
+			classifier_early_stopping_min_delta=classifier_early_stopping_min_delta,
+			autoencoder_early_stopping_min_delta=autoencoder_early_stopping_min_delta,
 			feature_chunk_size=feature_chunk_size,
 			chunk_feature_threshold=chunk_feature_threshold,
 			enable_feature_chunking=enable_feature_chunking,
@@ -1421,6 +1601,11 @@ def main(
 		classifier_hidden_units=classifier_hidden_units,
 		classifier_dropout_rates=classifier_dropout_rates,
 		classifier_learning_rate=classifier_learning_rate,
+		classifier_early_stopping_patience=classifier_early_stopping_patience,
+		autoencoder_early_stopping_patience=autoencoder_early_stopping_patience,
+		classifier_early_stopping_monitor=classifier_early_stopping_monitor,
+		classifier_early_stopping_min_delta=classifier_early_stopping_min_delta,
+		autoencoder_early_stopping_min_delta=autoencoder_early_stopping_min_delta,
 		feature_chunk_size=feature_chunk_size,
 		chunk_feature_threshold=chunk_feature_threshold,
 		enable_feature_chunking=enable_feature_chunking,
@@ -1444,6 +1629,11 @@ def run_repeated_experiments(
 	feature_chunk_size: int,
 	chunk_feature_threshold: int,
 	enable_feature_chunking: bool,
+	classifier_early_stopping_patience: int | None,
+	autoencoder_early_stopping_patience: int | None,
+	classifier_early_stopping_monitor: str,
+	classifier_early_stopping_min_delta: float,
+	autoencoder_early_stopping_min_delta: float,
 	cluster_min_k: int,
 	cluster_max_k: int,
 	save_training_plots: bool,
@@ -1477,6 +1667,11 @@ def run_repeated_experiments(
 			feature_chunk_size=feature_chunk_size,
 			chunk_feature_threshold=chunk_feature_threshold,
 			enable_feature_chunking=enable_feature_chunking,
+			classifier_early_stopping_patience=classifier_early_stopping_patience,
+			autoencoder_early_stopping_patience=autoencoder_early_stopping_patience,
+			classifier_early_stopping_monitor=classifier_early_stopping_monitor,
+			classifier_early_stopping_min_delta=classifier_early_stopping_min_delta,
+			autoencoder_early_stopping_min_delta=autoencoder_early_stopping_min_delta,
 			cluster_min_k=cluster_min_k,
 			cluster_max_k=cluster_max_k,
 			save_training_plots=save_training_plots,
@@ -1488,6 +1683,12 @@ def run_repeated_experiments(
 				feature_percent=feature_percent,
 				run_idx=run_idx,
 			)
+			if history_df is None:
+				history_df = collect_repeated_multiclass_run_history(
+					dataset_folder=dataset_folder,
+					feature_percent=feature_percent,
+					run_idx=run_idx,
+				)
 			if history_df is not None:
 				history_frames.append(history_df)
 		sorted_accuracy_values = sorted(accuracy_values, reverse=True)
@@ -1552,6 +1753,11 @@ if __name__ == "__main__":
 	parser.add_argument("--classifier-hidden-units", type=str, default="32,16", help="Classifier gizli katman nöronlari. Ornek: 128,64")
 	parser.add_argument("--classifier-dropout-rates", type=str, default="", help="Classifier dropout oranlari. Ornek: 0.3,0.2")
 	parser.add_argument("--classifier-learning-rate", type=float, default=0.001, help="Classifier ogrenme orani")
+	parser.add_argument("--classifier-early-stopping-patience", type=int, default=DEFAULT_EARLY_STOPPING_PATIENCE, help="Classifier icin early stopping patience. 0 verirsen kapanir")
+	parser.add_argument("--autoencoder-early-stopping-patience", type=int, default=DEFAULT_AUTOENCODER_EARLY_STOPPING_PATIENCE, help="Autoencoder icin val_loss tabanli early stopping patience. 0 verirsen kapanir")
+	parser.add_argument("--classifier-early-stopping-monitor", type=str, default=DEFAULT_CLASSIFIER_EARLY_STOPPING_MONITOR, choices=["val_loss", "val_accuracy"], help="Classifier early stopping metriği")
+	parser.add_argument("--classifier-early-stopping-min-delta", type=float, default=DEFAULT_EARLY_STOPPING_MIN_DELTA, help="Classifier icin minimum validation metric iyilesmesi. Daha kucuk iyilesmeler plato sayilir")
+	parser.add_argument("--autoencoder-early-stopping-min-delta", type=float, default=DEFAULT_AUTOENCODER_EARLY_STOPPING_MIN_DELTA, help="Autoencoder icin minimum val_loss iyilesmesi. Daha kucuk iyilesmeler plato sayilir")
 	parser.add_argument("--device", type=str, default="auto", choices=["auto", "gpu", "cpu"], help="Cihaz secimi: auto, gpu veya cpu")
 	parser.add_argument("--feature-chunk-size", type=int, default=DEFAULT_FEATURE_CHUNK_SIZE, help="Buyuk feature setlerinde her parcadaki feature sayisi")
 	parser.add_argument("--chunk-feature-threshold", type=int, default=DEFAULT_CHUNK_FEATURE_THRESHOLD, help="Feature sayisi bu esigi asarsa parcali akis kullanilir")
@@ -1594,6 +1800,11 @@ if __name__ == "__main__":
 		feature_chunk_size=args.feature_chunk_size,
 		chunk_feature_threshold=args.chunk_feature_threshold,
 		enable_feature_chunking=not args.disable_feature_chunking,
+		classifier_early_stopping_patience=args.classifier_early_stopping_patience if args.classifier_early_stopping_patience > 0 else None,
+		autoencoder_early_stopping_patience=args.autoencoder_early_stopping_patience if args.autoencoder_early_stopping_patience > 0 else None,
+		classifier_early_stopping_monitor=args.classifier_early_stopping_monitor,
+		classifier_early_stopping_min_delta=args.classifier_early_stopping_min_delta,
+		autoencoder_early_stopping_min_delta=args.autoencoder_early_stopping_min_delta,
 		cluster_min_k=args.cluster_min_k,
 		cluster_max_k=args.cluster_max_k,
 		save_training_plots=args.save_training_plots,

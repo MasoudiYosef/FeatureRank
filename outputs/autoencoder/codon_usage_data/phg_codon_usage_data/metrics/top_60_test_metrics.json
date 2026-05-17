@@ -1,8 +1,8 @@
 {
     "feature_percent": 60.0,
     "selected_feature_count": 41,
-    "test_mse": 0.6160405278205872,
-    "test_accuracy": 0.9861857252494244,
+    "test_mse": 0.6044862866401672,
+    "test_accuracy": 0.9831158864159631,
     "threshold": 0.5,
     "current_class_label": "phg",
     "class_counts": {

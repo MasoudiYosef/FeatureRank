@@ -1,2 +1,3 @@
 [0.7741935483870968]
+Sirali Accuracy: [0.7741935483870968]
 Ortalama Accuracy: 0.774194

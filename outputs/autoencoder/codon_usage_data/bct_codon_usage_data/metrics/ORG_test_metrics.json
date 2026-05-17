@@ -1,6 +1,6 @@
 {
-    "test_mse": 0.6244853138923645,
-    "test_accuracy": 0.9539524174980814,
+    "test_mse": 0.6641451120376587,
+    "test_accuracy": 0.9501151189562548,
     "threshold": 0.5,
     "current_class_label": "bct",
     "class_counts": {

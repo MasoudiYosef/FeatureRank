@@ -1,6 +1,6 @@
 {
-    "test_mse": 1.0044728517532349,
-    "test_accuracy": 1.0,
+    "test_mse": 1.0049277544021606,
+    "test_accuracy": 0.8148148148148148,
     "threshold": 0.5,
     "current_class_label": "KIRC",
     "class_counts": {

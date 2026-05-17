@@ -1,5 +1,5 @@
 {
-    "test_mse": 6.076731204986572,
+    "test_mse": 5.936102867126465,
     "test_accuracy": 0.9984650805832693,
     "threshold": 0.5,
     "current_class_label": "plm",

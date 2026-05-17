@@ -1,8 +1,8 @@
 {
     "feature_percent": 20.0,
     "selected_feature_count": 4106,
-    "test_mse": 0.862830638885498,
-    "test_accuracy": 0.8271604938271605,
+    "test_mse": 0.8821319937705994,
+    "test_accuracy": 0.9876543209876543,
     "threshold": 0.5,
     "current_class_label": "PRAD",
     "class_counts": {

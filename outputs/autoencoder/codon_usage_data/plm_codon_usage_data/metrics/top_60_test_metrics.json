@@ -1,7 +1,7 @@
 {
     "feature_percent": 60.0,
     "selected_feature_count": 41,
-    "test_mse": 0.6481921672821045,
+    "test_mse": 0.6385571360588074,
     "test_accuracy": 0.9984650805832693,
     "threshold": 0.5,
     "current_class_label": "plm",

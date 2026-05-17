@@ -1,7 +1,7 @@
 {
     "feature_percent": 10.0,
     "selected_feature_count": 8,
-    "test_mse": 0.72089684009552,
+    "test_mse": 0.7222290635108948,
     "test_accuracy": 0.8703703703703703,
     "threshold": 0.5,
     "current_class_label": "c-CS-s",

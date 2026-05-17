@@ -1,8 +1,8 @@
 {
     "feature_percent": 20.0,
     "selected_feature_count": 4106,
-    "test_mse": 0.8937069773674011,
-    "test_accuracy": 0.7530864197530864,
+    "test_mse": 0.8860883116722107,
+    "test_accuracy": 0.7160493827160493,
     "threshold": 0.5,
     "current_class_label": "BRCA",
     "class_counts": {

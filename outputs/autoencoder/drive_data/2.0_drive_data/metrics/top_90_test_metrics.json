@@ -1,0 +1,17 @@
+{
+    "feature_percent": 90.0,
+    "selected_feature_count": 5761,
+    "test_mse": 0.8314273953437805,
+    "test_accuracy": 0.8852459016393442,
+    "threshold": 0.5,
+    "current_class_label": 2.0,
+    "class_counts": {
+        "1.0": 27,
+        "2.0": 546,
+        "3.0": 33
+    },
+    "binary_label_counts": {
+        "label_0": 55,
+        "label_1": 6
+    }
+}

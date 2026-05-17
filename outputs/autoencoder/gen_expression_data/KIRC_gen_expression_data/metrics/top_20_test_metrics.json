@@ -1,7 +1,7 @@
 {
     "feature_percent": 20.0,
     "selected_feature_count": 4106,
-    "test_mse": 0.924004077911377,
+    "test_mse": 0.8984120488166809,
     "test_accuracy": 1.0,
     "threshold": 0.5,
     "current_class_label": "KIRC",

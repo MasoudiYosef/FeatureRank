@@ -1,0 +1,11 @@
+{
+    "feature_percent": 60.0,
+    "num_classes": 3,
+    "class_labels": [
+        1.0,
+        2.0,
+        3.0
+    ],
+    "macro_average": true,
+    "test_accuracy": 0.9065086836552508
+}

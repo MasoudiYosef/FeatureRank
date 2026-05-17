@@ -1,5 +1,5 @@
 {
-    "test_mse": 0.9080568552017212,
+    "test_mse": 0.9074211716651917,
     "test_accuracy": 0.9012345679012346,
     "threshold": 0.5,
     "current_class_label": "COAD",

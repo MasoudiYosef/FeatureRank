@@ -157,7 +157,13 @@ def _read_csv_flexible(path, is_feature_file: bool = False) -> pd.DataFrame:
                 if sparse_df is not None:
                     return sparse_df
 
-            df = pd.read_csv(path, header=None, dtype=np.float32)
+            try:
+                df = pd.read_csv(path, header=None, dtype=np.float32)
+            except ValueError:
+                # Mixed-type feature files (for example cortex) may contain
+                # categorical columns at the end. Let preprocessing coerce or
+                # drop non-numeric parts instead of failing at load time.
+                df = pd.read_csv(path, header=None)
             df.columns = [f"feature_{i+1}" for i in range(df.shape[1])]
             return df
 

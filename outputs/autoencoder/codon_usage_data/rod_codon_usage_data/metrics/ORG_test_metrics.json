@@ -1,6 +1,6 @@
 {
-    "test_mse": 0.6646524667739868,
-    "test_accuracy": 0.9846508058326938,
+    "test_mse": 5.926023483276367,
+    "test_accuracy": 0.9831158864159631,
     "threshold": 0.5,
     "current_class_label": "rod",
     "class_counts": {

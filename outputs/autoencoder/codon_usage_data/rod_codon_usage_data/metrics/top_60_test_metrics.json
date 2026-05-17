@@ -1,7 +1,7 @@
 {
     "feature_percent": 60.0,
     "selected_feature_count": 41,
-    "test_mse": 0.6500830054283142,
+    "test_mse": 0.6533158421516418,
     "test_accuracy": 0.9831158864159631,
     "threshold": 0.5,
     "current_class_label": "rod",

@@ -1,6 +1,6 @@
 {
-    "test_mse": 0.7027696371078491,
-    "test_accuracy": 0.985418265541059,
+    "test_mse": 0.6139622330665588,
+    "test_accuracy": 0.9831158864159631,
     "threshold": 0.5,
     "current_class_label": "phg",
     "class_counts": {

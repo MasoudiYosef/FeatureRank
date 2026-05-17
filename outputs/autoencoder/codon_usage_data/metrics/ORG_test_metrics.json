@@ -14,5 +14,5 @@
         "vrt"
     ],
     "macro_average": true,
-    "test_accuracy": 0.94510925284958
+    "test_accuracy": 0.9364363337151388
 }

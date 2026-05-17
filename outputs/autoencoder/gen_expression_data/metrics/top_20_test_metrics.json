@@ -9,5 +9,5 @@
         "PRAD"
     ],
     "macro_average": true,
-    "test_accuracy": 0.8511736872119726
+    "test_accuracy": 0.8623788166027033
 }

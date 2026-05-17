@@ -1,6 +1,6 @@
 {
-    "test_mse": 0.9749932885169983,
-    "test_accuracy": 0.7160493827160493,
+    "test_mse": 0.974502444267273,
+    "test_accuracy": 0.7283950617283951,
     "threshold": 0.5,
     "current_class_label": "BRCA",
     "class_counts": {
