@@ -1300,34 +1300,39 @@ def run_binary_experiment(
 		id_column=id_column,
 	)
 
-	selected_feature_names = selected_df["feature_name"].tolist()
-	X_train_filtered_raw = X_train_raw[selected_feature_names]
-	X_test_filtered_raw = X_test_raw[selected_feature_names]
-	X_train_filtered, X_test_filtered, _ = scale_data(X_train_filtered_raw, X_test_filtered_raw)
-	# Ensure consistent float32 dtype
-	X_train_filtered = X_train_filtered.astype(np.float32)
-	X_test_filtered = X_test_filtered.astype(np.float32)
 	y_train_filtered = y_train
 	y_test_filtered = y_test
-	filtered_test_mse, filtered_test_accuracy, _, _,_= train_and_evaluate_pipeline(
-		X_train_filtered,
-		X_test_filtered,
-		y_train_filtered,
-		y_test_filtered,
-		encoding_dim,
-		random_state,
-		classifier_epochs,
-		classifier_hidden_units,
-		classifier_dropout_rates,
-		classifier_learning_rate,
-		classifier_early_stopping_patience,
-		autoencoder_early_stopping_patience,
-		classifier_early_stopping_monitor,
-		classifier_early_stopping_min_delta,
-		autoencoder_early_stopping_min_delta,
-		history_output_dir=history_dir if save_training_plots else None,
-		history_prefix=f"top_{feature_percent_tag}" if save_training_plots else None,
-	)
+	if len(selected_df) == len(feature_names):
+		filtered_test_mse = test_mse
+		filtered_test_accuracy = test_accuracy
+		print("[INFO] Top %100 tum feature'lari iceriyor. ORG sonucu yeniden egitilmeden kullaniliyor.")
+	else:
+		selected_feature_names = selected_df["feature_name"].tolist()
+		X_train_filtered_raw = X_train_raw[selected_feature_names]
+		X_test_filtered_raw = X_test_raw[selected_feature_names]
+		X_train_filtered, X_test_filtered, _ = scale_data(X_train_filtered_raw, X_test_filtered_raw)
+		# Ensure consistent float32 dtype
+		X_train_filtered = X_train_filtered.astype(np.float32)
+		X_test_filtered = X_test_filtered.astype(np.float32)
+		filtered_test_mse, filtered_test_accuracy, _, _,_= train_and_evaluate_pipeline(
+			X_train_filtered,
+			X_test_filtered,
+			y_train_filtered,
+			y_test_filtered,
+			encoding_dim,
+			random_state,
+			classifier_epochs,
+			classifier_hidden_units,
+			classifier_dropout_rates,
+			classifier_learning_rate,
+			classifier_early_stopping_patience,
+			autoencoder_early_stopping_patience,
+			classifier_early_stopping_monitor,
+			classifier_early_stopping_min_delta,
+			autoencoder_early_stopping_min_delta,
+			history_output_dir=history_dir if save_training_plots else None,
+			history_prefix=f"top_{feature_percent_tag}" if save_training_plots else None,
+		)
 
 	org_metrics_data = {
 		"test_mse": test_mse,
