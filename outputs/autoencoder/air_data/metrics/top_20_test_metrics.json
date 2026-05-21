@@ -1,0 +1,10 @@
+{
+    "task": "regression",
+    "feature_percent": 20.0,
+    "selected_feature_count": 3,
+    "autoencoder_reconstruction_mse": 0.6601405739784241,
+    "regression_mse": 1329.8206787109375,
+    "regression_rmse": 36.466706441779706,
+    "regression_mae": 14.741406440734863,
+    "regression_r2": 0.003549516201019287
+}

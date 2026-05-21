@@ -17,6 +17,9 @@ import matplotlib.pyplot as plt
 from sklearn.cluster import KMeans
 from sklearn.metrics import (
 	accuracy_score,
+	mean_absolute_error,
+	mean_squared_error,
+	r2_score,
 	silhouette_score,
 )
 from sklearn.model_selection import train_test_split
@@ -26,7 +29,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from src.config import RANDOM_STATE
 from src.data_loader import convert_txt_dataset_to_csv, load_data
-from src.models import build_sigmoid_autoencoder, build_latent_classifier
+from src.models import build_sigmoid_autoencoder, build_latent_classifier, build_latent_regressor
 from src.preprocessing import preprocess_data, scale_data
 from src.autoencoder_feature_selection import (
 	save_top_percent_features_by_abs_max_weight,
@@ -47,7 +50,7 @@ DEFAULT_CLUSTER_MIN_K = 2
 DEFAULT_CLUSTER_MAX_K = 10
 DEFAULT_EARLY_STOPPING_PATIENCE = 3
 DEFAULT_AUTOENCODER_EARLY_STOPPING_PATIENCE = 0
-DEFAULT_EARLY_STOPPING_MIN_DELTA = 0.0
+DEFAULT_EARLY_STOPPING_MIN_DELTA = 1.0
 DEFAULT_AUTOENCODER_EARLY_STOPPING_MIN_DELTA = 0.001
 DEFAULT_CLASSIFIER_EARLY_STOPPING_MONITOR = "val_accuracy"
 
@@ -238,12 +241,14 @@ def save_average_convergence(
 		if "val_loss" in indexed_history.columns:
 			val_loss_series.append(indexed_history["val_loss"])
 
-	if not accuracy_series:
+	if not accuracy_series and not loss_series:
 		return
 
-	average_df = pd.DataFrame({"epoch": sorted(set().union(*(series.index for series in accuracy_series)))})
+	all_epoch_indexes = [series.index for series in accuracy_series + loss_series + val_accuracy_series + val_loss_series]
+	average_df = pd.DataFrame({"epoch": sorted(set().union(*all_epoch_indexes))})
 	average_df = average_df.set_index("epoch")
-	average_df["average_accuracy"] = pd.concat(accuracy_series, axis=1).mean(axis=1)
+	if accuracy_series:
+		average_df["average_accuracy"] = pd.concat(accuracy_series, axis=1).mean(axis=1)
 	if val_accuracy_series:
 		average_df["average_val_accuracy"] = pd.concat(val_accuracy_series, axis=1).mean(axis=1)
 	if loss_series:
@@ -256,20 +261,21 @@ def save_average_convergence(
 	average_df.to_csv(csv_path, index=False)
 	print(f"[OK] Average convergence CSV: {csv_path}")
 
-	plt.figure(figsize=(8, 5))
-	plt.plot(average_df["epoch"], average_df["average_accuracy"], label="average_accuracy")
-	if "average_val_accuracy" in average_df.columns:
-		plt.plot(average_df["epoch"], average_df["average_val_accuracy"], label="average_val_accuracy")
-	plt.xlabel("Epoch")
-	plt.ylabel("Average Accuracy")
-	plt.title(f"{file_prefix} average accuracy convergence")
-	plt.legend()
-	plt.grid(True, alpha=0.3)
-	plt.tight_layout()
-	accuracy_plot_path = output_dir / f"{file_prefix}_average_accuracy_convergence.png"
-	plt.savefig(accuracy_plot_path, dpi=150)
-	plt.close()
-	print(f"[OK] Average accuracy convergence plot: {accuracy_plot_path}")
+	if "average_accuracy" in average_df.columns:
+		plt.figure(figsize=(8, 5))
+		plt.plot(average_df["epoch"], average_df["average_accuracy"], label="average_accuracy")
+		if "average_val_accuracy" in average_df.columns:
+			plt.plot(average_df["epoch"], average_df["average_val_accuracy"], label="average_val_accuracy")
+		plt.xlabel("Epoch")
+		plt.ylabel("Average Accuracy")
+		plt.title(f"{file_prefix} average accuracy convergence")
+		plt.legend()
+		plt.grid(True, alpha=0.3)
+		plt.tight_layout()
+		accuracy_plot_path = output_dir / f"{file_prefix}_average_accuracy_convergence.png"
+		plt.savefig(accuracy_plot_path, dpi=150)
+		plt.close()
+		print(f"[OK] Average accuracy convergence plot: {accuracy_plot_path}")
 
 	if "average_loss" in average_df.columns:
 		plt.figure(figsize=(8, 5))
@@ -333,6 +339,7 @@ def collect_repeated_run_history(
 	history_dir = Path("outputs") / "autoencoder" / dataset_folder / "training_history"
 	candidates = [
 		history_dir / f"top_{feature_percent_tag}_classifier_history.csv",
+		history_dir / f"top_{feature_percent_tag}_regressor_history.csv",
 		history_dir / f"chunked_top_{feature_percent_tag}_final_classifier_history.csv",
 	]
 	for history_path in candidates:
@@ -409,6 +416,26 @@ def collect_repeated_multiclass_run_history(
 	macro_history.to_csv(run_macro_path, index=False)
 	print(f"[OK] Multiclass run macro epoch history kaydedildi: {run_macro_path}")
 	return macro_history
+
+
+def is_probable_regression_target(y: pd.Series) -> bool:
+	"""
+	Sürekli sayısal hedefleri classification class listesi gibi çalıştırmayı engeller.
+	0/1 veya az sayıda tekrarlı integer label multiclass olarak kalır.
+	"""
+	y_nonnull = y.dropna()
+	if y_nonnull.empty or not pd.api.types.is_numeric_dtype(y_nonnull):
+		return False
+
+	unique_count = int(y_nonnull.nunique())
+	if unique_count <= 20:
+		return False
+
+	values = y_nonnull.astype(float).to_numpy()
+	has_decimal_values = np.any(~np.isclose(values, np.round(values)))
+	unique_ratio = unique_count / len(y_nonnull)
+	singleton_ratio = float((y_nonnull.value_counts() == 1).mean())
+	return bool(has_decimal_values and (unique_ratio > 0.1 or singleton_ratio > 0.5))
 
 
 def unpack_processed_arrays(processed: dict) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
@@ -591,6 +618,101 @@ def train_and_evaluate_pipeline(
 	test_accuracy = float(accuracy_score(y_test.astype(int), y_pred))
 	print("classifier output shape:", classifier.output_shape)
 	return test_mse, test_accuracy, autoencoder, encoder,X_train_sub
+
+
+def train_and_evaluate_regression_pipeline(
+	X_train: np.ndarray,
+	X_test: np.ndarray,
+	y_train: np.ndarray,
+	y_test: np.ndarray,
+	encoding_dim: int,
+	random_state: int | None,
+	regressor_epochs: int,
+	regressor_hidden_units: tuple[int, ...],
+	regressor_dropout_rates: tuple[float, ...] | None,
+	regressor_learning_rate: float,
+	regressor_early_stopping_patience: int | None = None,
+	autoencoder_early_stopping_patience: int | None = None,
+	regressor_early_stopping_min_delta: float = DEFAULT_EARLY_STOPPING_MIN_DELTA,
+	autoencoder_early_stopping_min_delta: float = DEFAULT_AUTOENCODER_EARLY_STOPPING_MIN_DELTA,
+	history_output_dir: Path | None = None,
+	history_prefix: str | None = None,
+) -> tuple[dict, tf.keras.Model, tf.keras.Model, np.ndarray]:
+	X_train_sub, X_val, y_train_sub, y_val = train_test_split(
+		X_train,
+		y_train,
+		test_size=CLASSIFIER_VALIDATION_SPLIT,
+		random_state=random_state,
+		shuffle=True,
+	)
+
+	autoencoder_mse, autoencoder, encoder = train_autoencoder_model(
+		X_train_sub=X_train_sub,
+		X_val=X_val,
+		X_eval=X_test,
+		encoding_dim=encoding_dim,
+		early_stopping_patience=autoencoder_early_stopping_patience,
+		early_stopping_min_delta=autoencoder_early_stopping_min_delta,
+		history_output_dir=history_output_dir,
+		history_prefix=history_prefix,
+	)
+
+	X_train_encoded = encoder.predict(X_train_sub, verbose=0).astype(np.float32)
+	X_val_encoded = encoder.predict(X_val, verbose=0).astype(np.float32)
+	X_test_encoded = encoder.predict(X_test, verbose=0).astype(np.float32)
+
+	regressor = build_latent_regressor(
+		input_dim=X_train_encoded.shape[1],
+		hidden_units=regressor_hidden_units,
+		dropout_rates=regressor_dropout_rates,
+		learning_rate=regressor_learning_rate,
+	)
+
+	callbacks: list[tf.keras.callbacks.Callback] = []
+	if regressor_early_stopping_patience is not None and regressor_early_stopping_patience > 0:
+		callbacks.append(
+			tf.keras.callbacks.EarlyStopping(
+				monitor="val_loss",
+				patience=regressor_early_stopping_patience,
+				min_delta=regressor_early_stopping_min_delta,
+				restore_best_weights=True,
+				mode="min",
+				verbose=1,
+			)
+		)
+
+	regressor_history = regressor.fit(
+		X_train_encoded,
+		y_train_sub.astype(np.float32),
+		epochs=regressor_epochs,
+		batch_size=BATCH_SIZE,
+		validation_data=(X_val_encoded, y_val.astype(np.float32)),
+		callbacks=callbacks,
+		verbose=1,
+	)
+	if history_output_dir is not None and history_prefix is not None:
+		save_training_history(
+			history=regressor_history,
+			output_dir=history_output_dir,
+			file_prefix=f"{history_prefix}_regressor",
+			plot_metrics=("mae", "loss"),
+		)
+
+	y_pred = regressor.predict(X_test_encoded, verbose=0).ravel()
+	y_true = y_test.astype(np.float32).ravel()
+	regression_mse = float(mean_squared_error(y_true, y_pred))
+	regression_rmse = float(np.sqrt(regression_mse))
+	regression_mae = float(mean_absolute_error(y_true, y_pred))
+	regression_r2 = float(r2_score(y_true, y_pred))
+	metrics = {
+		"autoencoder_reconstruction_mse": autoencoder_mse,
+		"regression_mse": regression_mse,
+		"regression_rmse": regression_rmse,
+		"regression_mae": regression_mae,
+		"regression_r2": regression_r2,
+	}
+	print("regressor output shape:", regressor.output_shape)
+	return metrics, autoencoder, encoder, X_train_sub
 
 
 def normalize_cluster_k_range(min_k: int, max_k: int, sample_count: int) -> tuple[int, int]:
@@ -1394,6 +1516,142 @@ def run_binary_experiment(
 	return test_accuracy, filtered_test_accuracy
 
 
+def run_regression_experiment(
+	df: pd.DataFrame,
+	dataset_folder: str,
+	target_column: str,
+	id_column: str | None,
+	encoding_dim: int,
+	feature_percent: float,
+	random_state: int | None,
+	classifier_epochs: int,
+	classifier_hidden_units: tuple[int, ...],
+	classifier_dropout_rates: tuple[float, ...] | None,
+	classifier_learning_rate: float,
+	classifier_early_stopping_patience: int | None = DEFAULT_EARLY_STOPPING_PATIENCE,
+	autoencoder_early_stopping_patience: int | None = DEFAULT_AUTOENCODER_EARLY_STOPPING_PATIENCE,
+	classifier_early_stopping_min_delta: float = DEFAULT_EARLY_STOPPING_MIN_DELTA,
+	autoencoder_early_stopping_min_delta: float = DEFAULT_AUTOENCODER_EARLY_STOPPING_MIN_DELTA,
+	save_training_plots: bool = False,
+) -> tuple[float, float]:
+	processed = preprocess_data(
+		df,
+		target_column=target_column,
+		id_column=id_column,
+		random_state=random_state,
+		scale_features=False,
+		task_type="regression",
+	)
+	X_train_raw = processed["X_train"]
+	X_test_raw = processed["X_test"]
+	y_train = processed["y_train"].to_numpy().astype(np.float32)
+	y_test = processed["y_test"].to_numpy().astype(np.float32)
+
+	print(f"[INFO] Regression modu. X_train shape: {X_train_raw.shape}")
+	print(f"[INFO] X_test shape : {X_test_raw.shape}")
+
+	X_train, X_test, _ = scale_data(X_train_raw, X_test_raw)
+	X_train = X_train.astype(np.float32)
+	X_test = X_test.astype(np.float32)
+
+	output_dir = Path("outputs") / "autoencoder" / dataset_folder
+	metrics_dir = output_dir / "metrics"
+	history_dir = output_dir / "training_history"
+	ensure_dir(output_dir)
+	ensure_dir(metrics_dir)
+	if save_training_plots:
+		ensure_dir(history_dir)
+
+	org_metrics, autoencoder, _, X_train_sub_used = train_and_evaluate_regression_pipeline(
+		X_train=X_train,
+		X_test=X_test,
+		y_train=y_train,
+		y_test=y_test,
+		encoding_dim=encoding_dim,
+		random_state=random_state,
+		regressor_epochs=classifier_epochs,
+		regressor_hidden_units=classifier_hidden_units,
+		regressor_dropout_rates=classifier_dropout_rates,
+		regressor_learning_rate=classifier_learning_rate,
+		regressor_early_stopping_patience=classifier_early_stopping_patience,
+		autoencoder_early_stopping_patience=autoencoder_early_stopping_patience,
+		regressor_early_stopping_min_delta=classifier_early_stopping_min_delta,
+		autoencoder_early_stopping_min_delta=autoencoder_early_stopping_min_delta,
+		history_output_dir=history_dir if save_training_plots else None,
+		history_prefix="ORG" if save_training_plots else None,
+	)
+
+	feature_names = X_train_raw.columns.tolist()
+	weights_path = output_dir / "first_layer_W_list.csv"
+	save_feature_weighted_lists(autoencoder, X_train_sub_used, feature_names, weights_path)
+
+	feature_percent_tag = format_feature_percent_tag(feature_percent)
+	selected_features_path = output_dir / f"top_{feature_percent_tag}_max_abs_features.csv"
+	selected_df = save_top_percent_features_by_abs_max_weight(
+		weight_list_csv_path=weights_path,
+		feature_names=feature_names,
+		feature_percent=feature_percent,
+		output_path=selected_features_path,
+	)
+
+	filtered_data_dir = Path("data") / "autoencoder" / dataset_folder
+	ensure_dir(filtered_data_dir)
+	filtered_dataset_path = filtered_data_dir / f"top_{feature_percent_tag}_max_abs_features_dataset.csv"
+	save_filtered_dataset_from_selected_features(
+		full_df=df,
+		selected_df=selected_df,
+		target_column=target_column,
+		output_path=filtered_dataset_path,
+		id_column=id_column,
+	)
+
+	if len(selected_df) == len(feature_names):
+		filtered_metrics = dict(org_metrics)
+		print("[INFO] Top %100 tum feature'lari iceriyor. ORG regression sonucu yeniden egitilmeden kullaniliyor.")
+	else:
+		selected_feature_names = selected_df["feature_name"].tolist()
+		X_train_filtered_raw = X_train_raw[selected_feature_names]
+		X_test_filtered_raw = X_test_raw[selected_feature_names]
+		X_train_filtered, X_test_filtered, _ = scale_data(X_train_filtered_raw, X_test_filtered_raw)
+		filtered_metrics, _, _, _ = train_and_evaluate_regression_pipeline(
+			X_train=X_train_filtered.astype(np.float32),
+			X_test=X_test_filtered.astype(np.float32),
+			y_train=y_train,
+			y_test=y_test,
+			encoding_dim=encoding_dim,
+			random_state=random_state,
+			regressor_epochs=classifier_epochs,
+			regressor_hidden_units=classifier_hidden_units,
+			regressor_dropout_rates=classifier_dropout_rates,
+			regressor_learning_rate=classifier_learning_rate,
+			regressor_early_stopping_patience=classifier_early_stopping_patience,
+			autoencoder_early_stopping_patience=autoencoder_early_stopping_patience,
+			regressor_early_stopping_min_delta=classifier_early_stopping_min_delta,
+			autoencoder_early_stopping_min_delta=autoencoder_early_stopping_min_delta,
+			history_output_dir=history_dir if save_training_plots else None,
+			history_prefix=f"top_{feature_percent_tag}" if save_training_plots else None,
+		)
+
+	org_metrics_data = {"task": "regression", **org_metrics}
+	filtered_metrics_data = {
+		"task": "regression",
+		"feature_percent": feature_percent,
+		"selected_feature_count": len(selected_df),
+		**filtered_metrics,
+	}
+	save_json(org_metrics_data, metrics_dir / "ORG_test_metrics.json")
+	save_json(filtered_metrics_data, metrics_dir / f"top_{feature_percent_tag}_test_metrics.json")
+
+	print("\n[OK] Regression autoencoder egitimi tamamlandi.")
+	print(f"[OK] ORG R2: {org_metrics['regression_r2']:.6f}")
+	print(f"[OK] ORG RMSE: {org_metrics['regression_rmse']:.6f}")
+	print(f"[OK] Top %{feature_percent} secilen feature sayisi: {len(selected_df)}")
+	print(f"[OK] Top %{feature_percent} R2: {filtered_metrics['regression_r2']:.6f}")
+	print(f"[OK] Top %{feature_percent} RMSE: {filtered_metrics['regression_rmse']:.6f}")
+	print(f"[OK] Metrik dosyasi: {metrics_dir / f'top_{feature_percent_tag}_test_metrics.json'}")
+	return org_metrics["regression_r2"], filtered_metrics["regression_r2"]
+
+
 def run_multiclass_one_vs_rest(
 	df: pd.DataFrame,
 	dataset_folder: str,
@@ -1535,8 +1793,8 @@ def main(
 	save_training_plots: bool = False,
 ) -> tuple[float, float]:
 	task = task.lower().strip()
-	if task not in {"classification", "clustering"}:
-		raise ValueError("task 'classification' veya 'clustering' olmali.")
+	if task not in {"classification", "clustering", "regression"}:
+		raise ValueError("task 'classification', 'clustering' veya 'regression' olmali.")
 	configure_tensorflow_device(device)
 	set_reproducible(random_state)
 	if random_state is None:
@@ -1568,6 +1826,32 @@ def main(
 				enable_feature_chunking=enable_feature_chunking,
 				save_training_plots=save_training_plots,
 			)
+
+	if task == "regression":
+		return run_regression_experiment(
+			df=df,
+			dataset_folder=dataset_folder,
+			target_column=target_column,
+			id_column=id_column,
+			encoding_dim=encoding_dim,
+			feature_percent=feature_percent,
+			random_state=random_state,
+			classifier_epochs=classifier_epochs,
+			classifier_hidden_units=classifier_hidden_units,
+			classifier_dropout_rates=classifier_dropout_rates,
+			classifier_learning_rate=classifier_learning_rate,
+			classifier_early_stopping_patience=classifier_early_stopping_patience,
+			autoencoder_early_stopping_patience=autoencoder_early_stopping_patience,
+			classifier_early_stopping_min_delta=classifier_early_stopping_min_delta,
+			autoencoder_early_stopping_min_delta=autoencoder_early_stopping_min_delta,
+			save_training_plots=save_training_plots,
+		)
+
+	if task == "classification" and is_probable_regression_target(df[target_column]):
+		raise ValueError(
+			"Bu veri setinin target kolonu sürekli sayısal görünüyor; classification olarak çalıştırılamaz. "
+			"Regression için komutu şu şekilde kullan: --task regression"
+		)
 
 	class_count = int(df[target_column].nunique(dropna=True))
 	if class_count > 2:
@@ -1682,13 +1966,13 @@ def run_repeated_experiments(
 			save_training_plots=save_training_plots,
 		)
 		accuracy_values.append(float(filtered_test_accuracy))
-		if save_training_plots and task == "classification":
+		if save_training_plots and task in {"classification", "regression"}:
 			history_df = collect_repeated_run_history(
 				dataset_folder=dataset_folder,
 				feature_percent=feature_percent,
 				run_idx=run_idx,
 			)
-			if history_df is None:
+			if history_df is None and task == "classification":
 				history_df = collect_repeated_multiclass_run_history(
 					dataset_folder=dataset_folder,
 					feature_percent=feature_percent,
@@ -1715,6 +1999,9 @@ def run_repeated_experiments(
 	if task == "clustering":
 		plot_output_dir = Path("outputs") / "clustering" / dataset_folder / "metrics"
 		boxplot_metric_name = "Silhouette"
+	elif task == "regression":
+		plot_output_dir = Path("outputs") / "autoencoder" / dataset_folder / "metrics"
+		boxplot_metric_name = "R2"
 	else:
 		plot_output_dir = Path("outputs") / "autoencoder" / dataset_folder / "metrics"
 		boxplot_metric_name = "Accuracy"
@@ -1725,7 +2012,7 @@ def run_repeated_experiments(
 		metric_name=boxplot_metric_name,
 	)
 
-	if save_training_plots and task == "classification" and history_frames:
+	if save_training_plots and task in {"classification", "regression"} and history_frames:
 		history_dir = Path("outputs") / "autoencoder" / dataset_folder / "training_history"
 		save_average_convergence(
 			history_frames=history_frames,
@@ -1748,7 +2035,7 @@ if __name__ == "__main__":
 	parser.add_argument("--dataset-name", type=str, default="breast_cancer_data.csv", help="Raw data dosyasi (.csv veya .txt)")
 	parser.add_argument("--target-column", type=str, default="target", help="Hedef kolon adi")
 	parser.add_argument("--id-column", type=str, default="ID", help="ID kolon adi, kullanmak istemezsen 'none' ver")
-	parser.add_argument("--task", type=str, default="classification", choices=["classification", "clustering"], help="Calisma modu")
+	parser.add_argument("--task", type=str, default="classification", choices=["classification", "clustering", "regression"], help="Calisma modu")
 	parser.add_argument("--encoding-dim", type=int, default=8, help="Encoding boyutu")
 	parser.add_argument("--feature-percent", type=float, default=20.0, help="Secilecek feature yuzdesi")
 	parser.add_argument("--random-state", type=str, default=str(RANDOM_STATE), help="Random state. Ornek: 42 veya none")
@@ -1759,7 +2046,7 @@ if __name__ == "__main__":
 	parser.add_argument("--classifier-dropout-rates", type=str, default="", help="Classifier dropout oranlari. Ornek: 0.3,0.2")
 	parser.add_argument("--classifier-learning-rate", type=float, default=0.001, help="Classifier ogrenme orani")
 	parser.add_argument("--classifier-early-stopping-patience", type=int, default=DEFAULT_EARLY_STOPPING_PATIENCE, help="Classifier icin early stopping patience. 0 verirsen kapanir")
-	parser.add_argument("--autoencoder-early-stopping-patience", type=int, default=DEFAULT_AUTOENCODER_EARLY_STOPPING_PATIENCE, help="Autoencoder icin val_loss tabanli early stopping patience. 0 verirsen kapanir")
+	parser.add_argument("--autoencoder-early-stopping-patience", type=int, default=None, help="Autoencoder icin val_loss tabanli early stopping patience. 0 verirsen kapanir. Regression modunda verilmezse otomatik classifier patience kullanilir")
 	parser.add_argument("--classifier-early-stopping-monitor", type=str, default=DEFAULT_CLASSIFIER_EARLY_STOPPING_MONITOR, choices=["val_loss", "val_accuracy"], help="Classifier early stopping metriği")
 	parser.add_argument("--classifier-early-stopping-min-delta", type=float, default=DEFAULT_EARLY_STOPPING_MIN_DELTA, help="Classifier icin minimum validation metric iyilesmesi. Daha kucuk iyilesmeler plato sayilir")
 	parser.add_argument("--autoencoder-early-stopping-min-delta", type=float, default=DEFAULT_AUTOENCODER_EARLY_STOPPING_MIN_DELTA, help="Autoencoder icin minimum val_loss iyilesmesi. Daha kucuk iyilesmeler plato sayilir")
@@ -1776,6 +2063,13 @@ if __name__ == "__main__":
 	random_state = parse_random_state(args.random_state)
 	classifier_hidden_units = parse_hidden_units(args.classifier_hidden_units)
 	classifier_dropout_rates = parse_dropout_rates(args.classifier_dropout_rates, len(classifier_hidden_units))
+	if args.autoencoder_early_stopping_patience is None:
+		if args.task == "regression":
+			autoencoder_early_stopping_patience = args.classifier_early_stopping_patience
+		else:
+			autoencoder_early_stopping_patience = DEFAULT_AUTOENCODER_EARLY_STOPPING_PATIENCE
+	else:
+		autoencoder_early_stopping_patience = args.autoencoder_early_stopping_patience
 
 	if args.accuracy_list_txt.strip():
 		accuracy_txt_path = Path(args.accuracy_list_txt)
@@ -1784,11 +2078,18 @@ if __name__ == "__main__":
 		feature_percent_tag = format_feature_percent_tag(args.feature_percent)
 		if args.task == "clustering":
 			accuracy_txt_path = Path("outputs") / "clustering" / dataset_folder / "metrics" / f"top_{feature_percent_tag}_silhouette_runs.txt"
+		elif args.task == "regression":
+			accuracy_txt_path = Path("outputs") / "autoencoder" / dataset_folder / "metrics" / f"top_{feature_percent_tag}_r2_runs.txt"
 		else:
 			accuracy_txt_path = Path("outputs") / "autoencoder" / dataset_folder / "metrics" / f"top_{feature_percent_tag}_accuracy_runs.txt"
 	ensure_dir(accuracy_txt_path.parent)
 
-	metric_name = "Silhouette" if args.task == "clustering" else "Accuracy"
+	if args.task == "clustering":
+		metric_name = "Silhouette"
+	elif args.task == "regression":
+		metric_name = "R2"
+	else:
+		metric_name = "Accuracy"
 	accuracy_values, average_accuracy = run_repeated_experiments(
 		dataset_name=args.dataset_name,
 		target_column=args.target_column,
@@ -1806,7 +2107,7 @@ if __name__ == "__main__":
 		chunk_feature_threshold=args.chunk_feature_threshold,
 		enable_feature_chunking=not args.disable_feature_chunking,
 		classifier_early_stopping_patience=args.classifier_early_stopping_patience if args.classifier_early_stopping_patience > 0 else None,
-		autoencoder_early_stopping_patience=args.autoencoder_early_stopping_patience if args.autoencoder_early_stopping_patience > 0 else None,
+		autoencoder_early_stopping_patience=autoencoder_early_stopping_patience if autoencoder_early_stopping_patience > 0 else None,
 		classifier_early_stopping_monitor=args.classifier_early_stopping_monitor,
 		classifier_early_stopping_min_delta=args.classifier_early_stopping_min_delta,
 		autoencoder_early_stopping_min_delta=args.autoencoder_early_stopping_min_delta,

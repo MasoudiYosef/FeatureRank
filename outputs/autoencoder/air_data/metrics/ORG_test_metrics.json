@@ -1,0 +1,8 @@
+{
+    "task": "regression",
+    "autoencoder_reconstruction_mse": 0.6764634847640991,
+    "regression_mse": 2.239219903945923,
+    "regression_rmse": 1.4964023202153633,
+    "regression_mae": 0.5381371378898621,
+    "regression_r2": 0.9983221292495728
+}

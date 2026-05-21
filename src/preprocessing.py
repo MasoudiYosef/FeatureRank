@@ -68,6 +68,29 @@ def encode_target(df: pd.DataFrame, target_column: str = TARGET_COLUMN) -> pd.Da
     return df
 
 
+def encode_regression_target(df: pd.DataFrame, target_column: str = TARGET_COLUMN) -> pd.DataFrame:
+    """
+    Regression hedefini sınıf etiketine çevirmeden sayısal float olarak hazırlar.
+    """
+    df = df.copy()
+    if target_column not in df.columns:
+        raise ValueError(f"Target kolonu bulunamadı: {target_column}")
+
+    y = df[target_column]
+    if not pd.api.types.is_numeric_dtype(y):
+        y = y.astype(str).str.strip().str.replace(",", ".", regex=False)
+
+    y_numeric = pd.to_numeric(y, errors="coerce")
+    if y_numeric.isna().any():
+        bad_count = int(y_numeric.isna().sum())
+        raise ValueError(
+            f"Regression hedef kolonunda sayısala çevrilemeyen {bad_count} değer var: {target_column}"
+        )
+
+    df[target_column] = y_numeric.astype(np.float32)
+    return df
+
+
 def split_features_target(df: pd.DataFrame, target_column: str = TARGET_COLUMN):
     """
     Girdi özelliklerini (X) ve hedef değişkeni (y) ayırır.
@@ -152,7 +175,12 @@ def keep_numeric_features_only(X: pd.DataFrame) -> pd.DataFrame:
     return sanitize_mixed_type_features(X)
 
 
-def split_data(X: pd.DataFrame, y: pd.Series, random_state: int | None = RANDOM_STATE):
+def split_data(
+    X: pd.DataFrame,
+    y: pd.Series,
+    random_state: int | None = RANDOM_STATE,
+    stratify: bool = True,
+):
     """
     Veriyi train ve test olarak böler.
     stratify=y kullanarak sınıf dağılımını korur.
@@ -162,7 +190,7 @@ def split_data(X: pd.DataFrame, y: pd.Series, random_state: int | None = RANDOM_
         y,
         test_size=TEST_SIZE,
         random_state=random_state,
-        stratify=y # %63 benign %37 malignant ise train ve testte de buna yakın oran korunur. 
+        stratify=y if stratify else None # Classification'da sınıf dağılımını korur; regression'da kapalıdır.
     )
     return X_train, X_test, y_train, y_test
 
@@ -191,18 +219,27 @@ def preprocess_data(
     id_column: str | None = ID_COLUMN,
     random_state: int | None = RANDOM_STATE,
     scale_features: bool = True,
+    task_type: str = "classification",
 ):
     """
     Tüm preprocessing adımlarını sırasıyla uygular.
     Çıkış: float32 arrays (TensorFlow uyumluluğu)
     """
     df = drop_id_column(df, id_column=id_column)
-    df = encode_target(df, target_column=target_column)
+    task_type = task_type.lower().strip()
+    if task_type == "regression":
+        df = encode_regression_target(df, target_column=target_column)
+        use_stratify = False
+    elif task_type == "classification":
+        df = encode_target(df, target_column=target_column)
+        use_stratify = True
+    else:
+        raise ValueError("task_type 'classification' veya 'regression' olmali.")
 
     X, y = split_features_target(df, target_column=target_column)
     X = handle_pid_unrealistic_zeros(X)
     X = keep_numeric_features_only(X)
-    X_train, X_test, y_train, y_test = split_data(X, y, random_state=random_state)
+    X_train, X_test, y_train, y_test = split_data(X, y, random_state=random_state, stratify=use_stratify)
     if not scale_features:
         return {
             "X_train": X_train,

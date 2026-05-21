@@ -97,9 +97,46 @@ def build_latent_classifier(
     return classifier
 
 
+def build_latent_regressor(
+    input_dim,
+    hidden_units=(32, 16),
+    dropout_rates=None,
+    learning_rate=0.001,
+):
+    """
+    Encoder çıktısı üzerinde çalışan regression modeli.
+    Sürekli hedef değerler için linear çıkış + MSE loss kullanır.
+    """
+    regressor_input = Input(shape=(input_dim,), dtype="float32", name="regressor_input")
+    x = regressor_input
+
+    if not hidden_units:
+        raise ValueError("hidden_units en az bir katman icermeli.")
+
+    if dropout_rates is not None and len(dropout_rates) != len(hidden_units):
+        raise ValueError("dropout_rates uzunlugu hidden_units ile ayni olmali.")
+
+    for i, units in enumerate(hidden_units, start=1):
+        x = Dense(int(units), activation="relu", name=f"regressor_dense_{i}")(x)
+        if dropout_rates is not None and float(dropout_rates[i - 1]) > 0:
+            x = Dropout(float(dropout_rates[i - 1]), name=f"regressor_dropout_{i}")(x)
+
+    regressor_output = Dense(1, activation="linear", name="regressor_output")(x)
+    regressor = Model(inputs=regressor_input, outputs=regressor_output, name="latent_regressor")
+    regressor.compile(
+        optimizer=Adam(learning_rate=learning_rate),
+        loss="mse",
+        metrics=["mae"],
+        jit_compile=False
+    )
+
+    return regressor
+
+
 __all__ = [
     "build_baseline_model",
     "build_cnn",
     "build_sigmoid_autoencoder",
     "build_latent_classifier",
+    "build_latent_regressor",
 ]
