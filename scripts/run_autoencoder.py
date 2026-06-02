@@ -23,6 +23,7 @@ from sklearn.metrics import (
 	silhouette_score,
 )
 from sklearn.model_selection import train_test_split
+from sklearn.decomposition import PCA
 
 # Proje kokunu import path'ine ekle
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -47,10 +48,10 @@ DEFAULT_CLASSIFIER_HIDDEN_UNITS = (32, 16)
 DEFAULT_FEATURE_CHUNK_SIZE = 1000
 DEFAULT_CHUNK_FEATURE_THRESHOLD = 50000
 DEFAULT_CLUSTER_MIN_K = 2
-DEFAULT_CLUSTER_MAX_K = 10
-DEFAULT_EARLY_STOPPING_PATIENCE = 3
+DEFAULT_CLUSTER_MAX_K = 15
+DEFAULT_EARLY_STOPPING_PATIENCE = 0
 DEFAULT_AUTOENCODER_EARLY_STOPPING_PATIENCE = 0
-DEFAULT_EARLY_STOPPING_MIN_DELTA = 1.0
+DEFAULT_EARLY_STOPPING_MIN_DELTA = 0.0
 DEFAULT_AUTOENCODER_EARLY_STOPPING_MIN_DELTA = 0.001
 DEFAULT_CLASSIFIER_EARLY_STOPPING_MONITOR = "val_accuracy"
 
@@ -316,6 +317,77 @@ def save_metric_boxplot(
 	plt.savefig(plot_path, dpi=150)
 	plt.close()
 	print(f"[OK] {metric_name} boxplot: {plot_path}")
+
+
+def save_repeated_metric_distribution_plot(
+	metric_values: list[float],
+	output_dir: Path,
+	file_prefix: str,
+	metric_name: str,
+) -> None:
+	if not metric_values:
+		return
+
+	ensure_dir(output_dir)
+	runs = np.arange(1, len(metric_values) + 1)
+	values = np.asarray(metric_values, dtype=float)
+	mean_value = float(np.mean(values))
+	std_value = float(np.std(values, ddof=1)) if len(values) > 1 else 0.0
+	metric_label = metric_name.lower()
+
+	plt.figure(figsize=(9, 5))
+	plt.plot(runs, values, marker="o", linestyle="-", linewidth=1.2, markersize=4, label=metric_name)
+	plt.axhline(mean_value, color="#d62728", linestyle="--", linewidth=1.4, label=f"mean={mean_value:.4f}")
+	if len(values) > 1:
+		plt.fill_between(
+			runs,
+			mean_value - std_value,
+			mean_value + std_value,
+			color="#d62728",
+			alpha=0.12,
+			label=f"mean ± std ({std_value:.4f})",
+		)
+	plt.xlabel("Run")
+	plt.ylabel(metric_name)
+	plt.title(f"{file_prefix} repeated {metric_label} distribution")
+	plt.legend()
+	plt.grid(True, alpha=0.3)
+	plt.tight_layout()
+
+	plot_path = output_dir / f"{file_prefix}_{metric_label}_repeated_distribution.png"
+	plt.savefig(plot_path, dpi=150)
+	plt.close()
+	print(f"[OK] Repeated {metric_name} distribution plot: {plot_path}")
+
+
+def save_regression_actual_vs_predicted_plot(
+	y_true: np.ndarray,
+	y_pred: np.ndarray,
+	output_dir: Path,
+	file_prefix: str,
+) -> None:
+	if len(y_true) == 0 or len(y_pred) == 0:
+		return
+
+	ensure_dir(output_dir)
+	y_true = np.asarray(y_true, dtype=float).ravel()
+	y_pred = np.asarray(y_pred, dtype=float).ravel()
+	min_value = float(min(np.min(y_true), np.min(y_pred)))
+	max_value = float(max(np.max(y_true), np.max(y_pred)))
+
+	plt.figure(figsize=(7, 6))
+	plt.scatter(y_true, y_pred, alpha=0.75, s=28)
+	plt.plot([min_value, max_value], [min_value, max_value], color="#d62728", linestyle="--", linewidth=1.4)
+	plt.xlabel("Actual values")
+	plt.ylabel("Predicted values")
+	plt.title(f"{file_prefix} actual vs predicted")
+	plt.grid(True, alpha=0.3)
+	plt.tight_layout()
+
+	plot_path = output_dir / f"{file_prefix}_actual_vs_predicted.png"
+	plt.savefig(plot_path, dpi=150)
+	plt.close()
+	print(f"[OK] Actual vs predicted plot: {plot_path}")
 
 
 def extract_final_history_metric_values(history_frames: list[pd.DataFrame], metric_name: str) -> list[float]:
@@ -637,7 +709,7 @@ def train_and_evaluate_regression_pipeline(
 	autoencoder_early_stopping_min_delta: float = DEFAULT_AUTOENCODER_EARLY_STOPPING_MIN_DELTA,
 	history_output_dir: Path | None = None,
 	history_prefix: str | None = None,
-) -> tuple[dict, tf.keras.Model, tf.keras.Model, np.ndarray]:
+) -> tuple[dict, tf.keras.Model, tf.keras.Model, np.ndarray, np.ndarray, np.ndarray]:
 	X_train_sub, X_val, y_train_sub, y_val = train_test_split(
 		X_train,
 		y_train,
@@ -712,7 +784,7 @@ def train_and_evaluate_regression_pipeline(
 		"regression_r2": regression_r2,
 	}
 	print("regressor output shape:", regressor.output_shape)
-	return metrics, autoencoder, encoder, X_train_sub
+	return metrics, autoencoder, encoder, X_train_sub, y_true, y_pred
 
 
 def normalize_cluster_k_range(min_k: int, max_k: int, sample_count: int) -> tuple[int, int]:
@@ -759,6 +831,77 @@ def evaluate_kmeans_range(
 		raise ValueError("Gecerli silhouette skoru hesaplanamadi. k araligini veya veri boyutunu kontrol edin.")
 
 	return pd.DataFrame(rows), best_row, best_labels
+
+
+def save_cluster_evaluation_plots(scores_df: pd.DataFrame, output_dir: Path, file_prefix: str) -> None:
+	if scores_df.empty or "k" not in scores_df.columns:
+		return
+
+	ensure_dir(output_dir)
+	if "inertia" in scores_df.columns:
+		plt.figure(figsize=(8, 5))
+		plt.plot(scores_df["k"], scores_df["inertia"], marker="o")
+		plt.xlabel("Number of clusters (k)")
+		plt.ylabel("Within-cluster sum of squares (Inertia)")
+		plt.title(f"{file_prefix} elbow method")
+		plt.grid(True, alpha=0.3)
+		plt.tight_layout()
+		elbow_path = output_dir / f"{file_prefix}_elbow.png"
+		plt.savefig(elbow_path, dpi=150)
+		plt.close()
+		print(f"[OK] Elbow plot: {elbow_path}")
+
+	if "silhouette_score" in scores_df.columns:
+		silhouette_df = scores_df.dropna(subset=["silhouette_score"])
+		if not silhouette_df.empty:
+			plt.figure(figsize=(8, 5))
+			plt.plot(silhouette_df["k"], silhouette_df["silhouette_score"], marker="o")
+			plt.xlabel("Number of clusters (k)")
+			plt.ylabel("Silhouette score")
+			plt.title(f"{file_prefix} silhouette score")
+			plt.grid(True, alpha=0.3)
+			plt.tight_layout()
+			silhouette_path = output_dir / f"{file_prefix}_silhouette.png"
+			plt.savefig(silhouette_path, dpi=150)
+			plt.close()
+			print(f"[OK] Silhouette plot: {silhouette_path}")
+
+
+def save_cluster_pca_scatter(
+	X_cluster: np.ndarray,
+	labels: np.ndarray,
+	output_dir: Path,
+	file_prefix: str,
+) -> None:
+	if X_cluster.shape[0] < 2 or X_cluster.shape[1] < 2:
+		return
+
+	ensure_dir(output_dir)
+	pca = PCA(n_components=2, random_state=RANDOM_STATE)
+	X_2d = pca.fit_transform(X_cluster)
+	explained = pca.explained_variance_ratio_ * 100
+
+	plt.figure(figsize=(8, 6))
+	scatter = plt.scatter(
+		X_2d[:, 0],
+		X_2d[:, 1],
+		c=labels,
+		cmap="tab10",
+		s=28,
+		alpha=0.8,
+		edgecolors="none",
+	)
+	plt.xlabel(f"PC1 ({explained[0]:.1f}% variance)")
+	plt.ylabel(f"PC2 ({explained[1]:.1f}% variance)")
+	plt.title(f"{file_prefix} cluster visualization (PCA 2D)")
+	plt.grid(True, alpha=0.25)
+	plt.colorbar(scatter, label="Cluster")
+	plt.tight_layout()
+
+	plot_path = output_dir / f"{file_prefix}_clusters_pca_2d.png"
+	plt.savefig(plot_path, dpi=150)
+	plt.close()
+	print(f"[OK] Cluster PCA 2D plot: {plot_path}")
 
 
 def load_selected_features_if_compatible(selected_features_path: Path, feature_names: list[str]) -> pd.DataFrame | None:
@@ -982,7 +1125,61 @@ def run_clustering_experiment(
 	ensure_dir(metrics_dir)
 
 	print(f"[INFO] Clustering modu basladi. X shape: {X_raw.shape}")
-	print("[INFO] Label varsa clustering egitiminde kullanilmayacak; sadece k=class_count belirlemek icin kullanilacak.")
+	print("[INFO] Label varsa clustering egitiminde kullanilmayacak; k degeri silhouette skoruna gore secilecek.")
+
+	effective_min_k = cluster_min_k
+	effective_max_k = cluster_max_k
+	if y_all is not None and y_all.nunique(dropna=True) > 1:
+		class_count = int(y_all.nunique(dropna=True))
+		print(
+			f"[INFO] Label bulundu: class_count={class_count}. "
+			f"KMeans k araligi korunuyor: {effective_min_k}-{effective_max_k}."
+		)
+
+	X_org_scaled, _, _ = scale_data(X_raw, X_raw)
+	X_org_scaled = X_org_scaled.astype(np.float32)
+	org_scores_df, org_best_row, org_best_labels = evaluate_kmeans_range(
+		X_cluster=X_org_scaled,
+		min_k=effective_min_k,
+		max_k=effective_max_k,
+		random_state=random_state,
+	)
+	org_scores_path = output_dir / "ORG_cluster_scores.csv"
+	org_scores_df.to_csv(org_scores_path, index=False)
+	save_cluster_evaluation_plots(
+		scores_df=org_scores_df,
+		output_dir=output_dir,
+		file_prefix="ORG",
+	)
+	save_cluster_pca_scatter(
+		X_cluster=X_org_scaled,
+		labels=org_best_labels,
+		output_dir=output_dir,
+		file_prefix="ORG",
+	)
+	org_assignments_df = pd.DataFrame(
+		{
+			"sample_index": X_raw.index.tolist(),
+			"cluster": org_best_labels.astype(int),
+		}
+	)
+	if y_all is not None:
+		org_assignments_df["true_label"] = y_all.to_numpy()
+	org_assignments_path = output_dir / "ORG_cluster_assignments.csv"
+	org_assignments_df.to_csv(org_assignments_path, index=False)
+	org_metrics_data = {
+		"task": "clustering",
+		"feature_set": "ORG",
+		"original_feature_count": len(feature_names),
+		"selected_feature_count": len(feature_names),
+		"cluster_min_k": effective_min_k,
+		"cluster_max_k": effective_max_k,
+		"best_k": int(org_best_row["k"]),
+		"silhouette_score": float(org_best_row["silhouette_score"]),
+		"inertia": float(org_best_row["inertia"]),
+	}
+	org_metrics_path = metrics_dir / "ORG_cluster_metrics.json"
+	save_json(org_metrics_data, org_metrics_path)
 
 	selected_df = ensure_shared_selected_features(
 		processed=processed,
@@ -1004,14 +1201,6 @@ def run_clustering_experiment(
 	X_selected_scaled, _, _ = scale_data(X_selected_raw, X_selected_raw)
 	X_selected_scaled = X_selected_scaled.astype(np.float32)
 
-	effective_min_k = cluster_min_k
-	effective_max_k = cluster_max_k
-	if y_all is not None and y_all.nunique(dropna=True) > 1:
-		class_count = int(y_all.nunique(dropna=True))
-		effective_min_k = class_count
-		effective_max_k = class_count
-		print(f"[INFO] Label bulundu. Clustering k degeri class_count olarak ayarlandi: k={class_count}")
-
 	scores_df, best_row, best_labels = evaluate_kmeans_range(
 		X_cluster=X_selected_scaled,
 		min_k=effective_min_k,
@@ -1021,6 +1210,17 @@ def run_clustering_experiment(
 
 	scores_path = output_dir / f"top_{feature_percent_tag}_cluster_scores.csv"
 	scores_df.to_csv(scores_path, index=False)
+	save_cluster_evaluation_plots(
+		scores_df=scores_df,
+		output_dir=output_dir,
+		file_prefix=f"top_{feature_percent_tag}",
+	)
+	save_cluster_pca_scatter(
+		X_cluster=X_selected_scaled,
+		labels=best_labels,
+		output_dir=output_dir,
+		file_prefix=f"top_{feature_percent_tag}",
+	)
 
 	assignments_df = pd.DataFrame(
 		{
@@ -1035,10 +1235,13 @@ def run_clustering_experiment(
 
 	metrics_data = {
 		"task": "clustering",
+		"feature_set": f"top_{feature_percent_tag}",
 		"feature_percent": feature_percent,
 		"original_feature_count": len(feature_names),
 		"selected_feature_count": len(selected_df),
-		"cluster_k": int(best_row["k"]),
+		"cluster_min_k": effective_min_k,
+		"cluster_max_k": effective_max_k,
+		"best_k": int(best_row["k"]),
 		"silhouette_score": float(best_row["silhouette_score"]),
 		"inertia": float(best_row["inertia"]),
 	}
@@ -1046,6 +1249,9 @@ def run_clustering_experiment(
 	save_json(metrics_data, metrics_path)
 
 	print("\n[OK] Clustering tamamlandi.")
+	print(f"[OK] ORG silhouette_score: {float(org_best_row['silhouette_score']):.6f}")
+	print(f"[OK] ORG best k: {int(org_best_row['k'])}")
+	print(f"[OK] ORG metrik dosyasi: {org_metrics_path}")
 	print(f"[OK] Top %{feature_percent} secilen feature sayisi: {len(selected_df)}")
 	print(f"[OK] En iyi k: {int(best_row['k'])}")
 	print(f"[OK] En iyi silhouette_score: {float(best_row['silhouette_score']):.6f}")
@@ -1562,7 +1768,7 @@ def run_regression_experiment(
 	if save_training_plots:
 		ensure_dir(history_dir)
 
-	org_metrics, autoencoder, _, X_train_sub_used = train_and_evaluate_regression_pipeline(
+	org_metrics, autoencoder, _, X_train_sub_used, org_y_true, org_y_pred = train_and_evaluate_regression_pipeline(
 		X_train=X_train,
 		X_test=X_test,
 		y_train=y_train,
@@ -1579,6 +1785,12 @@ def run_regression_experiment(
 		autoencoder_early_stopping_min_delta=autoencoder_early_stopping_min_delta,
 		history_output_dir=history_dir if save_training_plots else None,
 		history_prefix="ORG" if save_training_plots else None,
+	)
+	save_regression_actual_vs_predicted_plot(
+		y_true=org_y_true,
+		y_pred=org_y_pred,
+		output_dir=output_dir,
+		file_prefix="ORG",
 	)
 
 	feature_names = X_train_raw.columns.tolist()
@@ -1607,13 +1819,15 @@ def run_regression_experiment(
 
 	if len(selected_df) == len(feature_names):
 		filtered_metrics = dict(org_metrics)
+		filtered_y_true = org_y_true
+		filtered_y_pred = org_y_pred
 		print("[INFO] Top %100 tum feature'lari iceriyor. ORG regression sonucu yeniden egitilmeden kullaniliyor.")
 	else:
 		selected_feature_names = selected_df["feature_name"].tolist()
 		X_train_filtered_raw = X_train_raw[selected_feature_names]
 		X_test_filtered_raw = X_test_raw[selected_feature_names]
 		X_train_filtered, X_test_filtered, _ = scale_data(X_train_filtered_raw, X_test_filtered_raw)
-		filtered_metrics, _, _, _ = train_and_evaluate_regression_pipeline(
+		filtered_metrics, _, _, _, filtered_y_true, filtered_y_pred = train_and_evaluate_regression_pipeline(
 			X_train=X_train_filtered.astype(np.float32),
 			X_test=X_test_filtered.astype(np.float32),
 			y_train=y_train,
@@ -1631,6 +1845,12 @@ def run_regression_experiment(
 			history_output_dir=history_dir if save_training_plots else None,
 			history_prefix=f"top_{feature_percent_tag}" if save_training_plots else None,
 		)
+	save_regression_actual_vs_predicted_plot(
+		y_true=filtered_y_true,
+		y_pred=filtered_y_pred,
+		output_dir=output_dir,
+		file_prefix=f"top_{feature_percent_tag}",
+	)
 
 	org_metrics_data = {"task": "regression", **org_metrics}
 	filtered_metrics_data = {
@@ -1987,11 +2207,13 @@ def run_repeated_experiments(
 		)
 
 	average_accuracy = sum(accuracy_values) / len(accuracy_values) if accuracy_values else 0.0
+	std_accuracy = float(np.std(accuracy_values, ddof=1)) if len(accuracy_values) > 1 else 0.0
 	sorted_accuracy_values = sorted(accuracy_values, reverse=True)
 	output_text = (
 		f"{accuracy_values}\n"
 		f"Sirali {metric_name}: {sorted_accuracy_values}\n"
-		f"Ortalama {metric_name}: {average_accuracy:.6f}"
+		f"Ortalama {metric_name}: {average_accuracy:.6f}\n"
+		f"Std {metric_name}: {std_accuracy:.6f}"
 	)
 	accuracy_txt_path.write_text(output_text, encoding="utf-8")
 
@@ -2006,6 +2228,12 @@ def run_repeated_experiments(
 		plot_output_dir = Path("outputs") / "autoencoder" / dataset_folder / "metrics"
 		boxplot_metric_name = "Accuracy"
 	save_metric_boxplot(
+		metric_values=accuracy_values,
+		output_dir=plot_output_dir,
+		file_prefix=f"top_{feature_percent_tag}",
+		metric_name=boxplot_metric_name,
+	)
+	save_repeated_metric_distribution_plot(
 		metric_values=accuracy_values,
 		output_dir=plot_output_dir,
 		file_prefix=f"top_{feature_percent_tag}",
