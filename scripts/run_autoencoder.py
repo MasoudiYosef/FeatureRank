@@ -24,6 +24,7 @@ from sklearn.metrics import (
 )
 from sklearn.model_selection import train_test_split
 from sklearn.decomposition import PCA
+from sklearn.metrics.pairwise import cosine_similarity
 
 # Proje kokunu import path'ine ekle
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -776,13 +777,25 @@ def train_and_evaluate_regression_pipeline(
 	regression_rmse = float(np.sqrt(regression_mse))
 	regression_mae = float(mean_absolute_error(y_true, y_pred))
 	regression_r2 = float(r2_score(y_true, y_pred))
+	if len(y_true) < 2 or np.isclose(np.std(y_true), 0.0) or np.isclose(np.std(y_pred), 0.0):
+		pearson_r = float("nan")
+	else:
+		pearson_r = float(np.corrcoef(y_true, y_pred)[0, 1])
+	if np.isclose(np.linalg.norm(y_true), 0.0) or np.isclose(np.linalg.norm(y_pred), 0.0):
+		cosine_sim = float("nan")
+	else:
+		cosine_sim = float(cosine_similarity(y_true.reshape(1, -1), y_pred.reshape(1, -1))[0, 0])
 	metrics = {
 		"autoencoder_reconstruction_mse": autoencoder_mse,
 		"regression_mse": regression_mse,
 		"regression_rmse": regression_rmse,
 		"regression_mae": regression_mae,
 		"regression_r2": regression_r2,
+		"cosine_similarity": cosine_sim,
+		"pearson_r": pearson_r,
 	}
+	#regression_r2 = model performansı / açıklama gücü
+	#pearson_r     = gerçek-tahmin korelasyonu
 	print("regressor output shape:", regressor.output_shape)
 	return metrics, autoencoder, encoder, X_train_sub, y_true, y_pred
 
@@ -1869,7 +1882,7 @@ def run_regression_experiment(
 	print(f"[OK] Top %{feature_percent} R2: {filtered_metrics['regression_r2']:.6f}")
 	print(f"[OK] Top %{feature_percent} RMSE: {filtered_metrics['regression_rmse']:.6f}")
 	print(f"[OK] Metrik dosyasi: {metrics_dir / f'top_{feature_percent_tag}_test_metrics.json'}")
-	return org_metrics["regression_r2"], filtered_metrics["regression_r2"]
+	return org_metrics["pearson_r"], filtered_metrics["pearson_r"]
 
 
 def run_multiclass_one_vs_rest(
@@ -2223,7 +2236,7 @@ def run_repeated_experiments(
 		boxplot_metric_name = "Silhouette"
 	elif task == "regression":
 		plot_output_dir = Path("outputs") / "autoencoder" / dataset_folder / "metrics"
-		boxplot_metric_name = "R2"
+		boxplot_metric_name = "Pearson_r"
 	else:
 		plot_output_dir = Path("outputs") / "autoencoder" / dataset_folder / "metrics"
 		boxplot_metric_name = "Accuracy"
@@ -2307,7 +2320,7 @@ if __name__ == "__main__":
 		if args.task == "clustering":
 			accuracy_txt_path = Path("outputs") / "clustering" / dataset_folder / "metrics" / f"top_{feature_percent_tag}_silhouette_runs.txt"
 		elif args.task == "regression":
-			accuracy_txt_path = Path("outputs") / "autoencoder" / dataset_folder / "metrics" / f"top_{feature_percent_tag}_r2_runs.txt"
+			accuracy_txt_path = Path("outputs") / "autoencoder" / dataset_folder / "metrics" / f"top_{feature_percent_tag}_pearson_r_runs.txt"
 		else:
 			accuracy_txt_path = Path("outputs") / "autoencoder" / dataset_folder / "metrics" / f"top_{feature_percent_tag}_accuracy_runs.txt"
 	ensure_dir(accuracy_txt_path.parent)
@@ -2315,7 +2328,7 @@ if __name__ == "__main__":
 	if args.task == "clustering":
 		metric_name = "Silhouette"
 	elif args.task == "regression":
-		metric_name = "R2"
+		metric_name = "Pearson_r"
 	else:
 		metric_name = "Accuracy"
 	accuracy_values, average_accuracy = run_repeated_experiments(
