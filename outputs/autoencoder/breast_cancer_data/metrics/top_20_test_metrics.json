@@ -3,5 +3,6 @@
     "selected_feature_count": 6,
     "test_mse": 0.6217249631881714,
     "test_accuracy": 0.9122807017543859,
-    "threshold": 0.5
+    "threshold": 0.5,
+    "elapsed_seconds": 9.303947915999743
 }

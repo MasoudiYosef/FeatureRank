@@ -3,13 +3,15 @@ import sys
 import argparse
 import random
 import json
+import time
 from pathlib import Path
+
+os.environ.setdefault("MPLCONFIGDIR", str((Path.cwd() / ".matplotlib_cache").resolve()))
 
 import numpy as np
 import pandas as pd
 import tensorflow as tf
 
-os.environ.setdefault("MPLCONFIGDIR", str((Path.cwd() / ".matplotlib_cache").resolve()))
 import matplotlib
 
 matplotlib.use("Agg")
@@ -389,6 +391,43 @@ def save_regression_actual_vs_predicted_plot(
 	plt.savefig(plot_path, dpi=150)
 	plt.close()
 	print(f"[OK] Actual vs predicted plot: {plot_path}")
+
+
+def save_regression_prediction_errors(
+	y_true: np.ndarray,
+	y_pred: np.ndarray,
+	sample_index,
+	output_dir: Path,
+	file_prefix: str,
+) -> Path | None:
+	if len(y_true) == 0 or len(y_pred) == 0:
+		return None
+
+	ensure_dir(output_dir)
+	y_true = np.asarray(y_true, dtype=float).ravel()
+	y_pred = np.asarray(y_pred, dtype=float).ravel()
+	if len(y_true) != len(y_pred):
+		raise ValueError(f"Regression true/pred length mismatch: {len(y_true)} != {len(y_pred)}")
+
+	sample_index_values = list(sample_index)
+	if len(sample_index_values) != len(y_true):
+		sample_index_values = list(range(len(y_true)))
+
+	error = y_pred - y_true
+	predictions_df = pd.DataFrame(
+		{
+			"sample_index": sample_index_values,
+			"true_value": y_true,
+			"predicted_value": y_pred,
+			"error_pred_minus_true": error,
+			"absolute_error": np.abs(error),
+			"squared_error": error ** 2,
+		}
+	)
+	csv_path = output_dir / f"{file_prefix}_prediction_errors.csv"
+	predictions_df.to_csv(csv_path, index=False)
+	print(f"[OK] Regression prediction errors CSV: {csv_path}")
+	return csv_path
 
 
 def extract_final_history_metric_values(history_frames: list[pd.DataFrame], metric_name: str) -> list[float]:
@@ -1121,6 +1160,7 @@ def run_clustering_experiment(
 	enable_feature_chunking: bool,
 	save_training_plots: bool,
 ) -> tuple[float, float]:
+	start_time = time.perf_counter()
 	processed = preprocess_data(
 		df,
 		target_column=target_column,
@@ -1180,6 +1220,7 @@ def run_clustering_experiment(
 		org_assignments_df["true_label"] = y_all.to_numpy()
 	org_assignments_path = output_dir / "ORG_cluster_assignments.csv"
 	org_assignments_df.to_csv(org_assignments_path, index=False)
+	org_elapsed_seconds = time.perf_counter() - start_time
 	org_metrics_data = {
 		"task": "clustering",
 		"feature_set": "ORG",
@@ -1190,6 +1231,7 @@ def run_clustering_experiment(
 		"best_k": int(org_best_row["k"]),
 		"silhouette_score": float(org_best_row["silhouette_score"]),
 		"inertia": float(org_best_row["inertia"]),
+		"elapsed_seconds": org_elapsed_seconds,
 	}
 	org_metrics_path = metrics_dir / "ORG_cluster_metrics.json"
 	save_json(org_metrics_data, org_metrics_path)
@@ -1245,6 +1287,7 @@ def run_clustering_experiment(
 		assignments_df["true_label"] = y_all.to_numpy()
 	assignments_path = output_dir / f"top_{feature_percent_tag}_cluster_assignments.csv"
 	assignments_df.to_csv(assignments_path, index=False)
+	elapsed_seconds = time.perf_counter() - start_time
 
 	metrics_data = {
 		"task": "clustering",
@@ -1257,6 +1300,7 @@ def run_clustering_experiment(
 		"best_k": int(best_row["k"]),
 		"silhouette_score": float(best_row["silhouette_score"]),
 		"inertia": float(best_row["inertia"]),
+		"elapsed_seconds": elapsed_seconds,
 	}
 	metrics_path = metrics_dir / f"top_{feature_percent_tag}_cluster_metrics.json"
 	save_json(metrics_data, metrics_path)
@@ -1268,6 +1312,7 @@ def run_clustering_experiment(
 	print(f"[OK] Top %{feature_percent} secilen feature sayisi: {len(selected_df)}")
 	print(f"[OK] En iyi k: {int(best_row['k'])}")
 	print(f"[OK] En iyi silhouette_score: {float(best_row['silhouette_score']):.6f}")
+	print(f"[OK] Calisma suresi: {elapsed_seconds:.2f} saniye")
 	print(f"[OK] Elbow/Inertia skor CSV: {scores_path}")
 	print(f"[OK] Cluster atamalari: {assignments_path}")
 	return float(best_row["silhouette_score"]), float(best_row["silhouette_score"])
@@ -1538,6 +1583,7 @@ def run_binary_experiment(
 	current_class_label: int | None = None,
 	class_counts: dict[int, int] | None = None,
 ) -> tuple[float, float]:
+	start_time = time.perf_counter()
 	processed = preprocess_data(
 		df,
 		target_column=target_column,
@@ -1618,17 +1664,22 @@ def run_binary_experiment(
 	)
 
 	feature_names = X_train_raw.columns.tolist()
-	weights_path = output_dir / "first_layer_W_list.csv"
-	save_feature_weighted_lists(autoencoder, X_train_sub_used, feature_names, weights_path)
-
 	feature_percent_tag = format_feature_percent_tag(feature_percent)
 	selected_features_path = output_dir / f"top_{feature_percent_tag}_max_abs_features.csv"
-	selected_df = save_top_percent_features_by_abs_max_weight(
-		weight_list_csv_path=weights_path,
-		feature_names=feature_names,
-		feature_percent=feature_percent,
-		output_path=selected_features_path,
-	)
+	selected_df = None
+	if selected_features_path.exists():
+		selected_df = load_selected_features_if_compatible(selected_features_path, feature_names)
+		if selected_df is not None:
+			print(f"[INFO] Mevcut feature listesi kullaniliyor: {selected_features_path}")
+	if selected_df is None:
+		weights_path = output_dir / "first_layer_W_list.csv"
+		save_feature_weighted_lists(autoencoder, X_train_sub_used, feature_names, weights_path)
+		selected_df = save_top_percent_features_by_abs_max_weight(
+			weight_list_csv_path=weights_path,
+			feature_names=feature_names,
+			feature_percent=feature_percent,
+			output_path=selected_features_path,
+		)
 
 	filtered_data_dir = Path("data") / "autoencoder" / dataset_folder
 	ensure_dir(filtered_data_dir)
@@ -1675,10 +1726,12 @@ def run_binary_experiment(
 			history_prefix=f"top_{feature_percent_tag}" if save_training_plots else None,
 		)
 
+	elapsed_seconds = time.perf_counter() - start_time
 	org_metrics_data = {
 		"test_mse": test_mse,
 		"test_accuracy": test_accuracy,
 		"threshold": THRESHOLD,
+		"elapsed_seconds": elapsed_seconds,
 	}
 	if current_class_label is not None and class_counts is not None:
 		org_metrics_data["current_class_label"] = current_class_label
@@ -1702,6 +1755,7 @@ def run_binary_experiment(
 		"test_mse": filtered_test_mse,
 		"test_accuracy": filtered_test_accuracy,
 		"threshold": THRESHOLD,
+		"elapsed_seconds": elapsed_seconds,
 	}
 	if current_class_label is not None and class_counts is not None:
 		filtered_metrics_data["current_class_label"] = current_class_label
@@ -1728,6 +1782,7 @@ def run_binary_experiment(
 	#print(f"[OK] Filterlenmis dataset CSV: {filtered_dataset_path} (satir: {len(filtered_df)})")
 	#print(f"[OK] Top %{feature_percent} dataset test_mse: {filtered_test_mse:.6f}")
 	print(f"[OK] Top %{feature_percent} dataset test_accuracy: {filtered_test_accuracy:.6f}")
+	print(f"[OK] Calisma suresi: {elapsed_seconds:.2f} saniye")
 	filtered_metrics_path = metrics_dir / f"top_{feature_percent_tag}_test_metrics.json"
 	print(f"[OK] Top %{feature_percent} metrik dosyasi: {filtered_metrics_path}")
 	#print(f"[OK] Output klasoru: {output_dir}")
@@ -1753,6 +1808,7 @@ def run_regression_experiment(
 	autoencoder_early_stopping_min_delta: float = DEFAULT_AUTOENCODER_EARLY_STOPPING_MIN_DELTA,
 	save_training_plots: bool = False,
 ) -> tuple[float, float]:
+	start_time = time.perf_counter()
 	processed = preprocess_data(
 		df,
 		target_column=target_column,
@@ -1805,19 +1861,31 @@ def run_regression_experiment(
 		output_dir=output_dir,
 		file_prefix="ORG",
 	)
+	org_prediction_errors_path = save_regression_prediction_errors(
+		y_true=org_y_true,
+		y_pred=org_y_pred,
+		sample_index=X_test_raw.index,
+		output_dir=output_dir,
+		file_prefix="ORG",
+	)
 
 	feature_names = X_train_raw.columns.tolist()
-	weights_path = output_dir / "first_layer_W_list.csv"
-	save_feature_weighted_lists(autoencoder, X_train_sub_used, feature_names, weights_path)
-
 	feature_percent_tag = format_feature_percent_tag(feature_percent)
 	selected_features_path = output_dir / f"top_{feature_percent_tag}_max_abs_features.csv"
-	selected_df = save_top_percent_features_by_abs_max_weight(
-		weight_list_csv_path=weights_path,
-		feature_names=feature_names,
-		feature_percent=feature_percent,
-		output_path=selected_features_path,
-	)
+	selected_df = None
+	if selected_features_path.exists():
+		selected_df = load_selected_features_if_compatible(selected_features_path, feature_names)
+		if selected_df is not None:
+			print(f"[INFO] Mevcut feature listesi kullaniliyor: {selected_features_path}")
+	if selected_df is None:
+		weights_path = output_dir / "first_layer_W_list.csv"
+		save_feature_weighted_lists(autoencoder, X_train_sub_used, feature_names, weights_path)
+		selected_df = save_top_percent_features_by_abs_max_weight(
+			weight_list_csv_path=weights_path,
+			feature_names=feature_names,
+			feature_percent=feature_percent,
+			output_path=selected_features_path,
+		)
 
 	filtered_data_dir = Path("data") / "autoencoder" / dataset_folder
 	ensure_dir(filtered_data_dir)
@@ -1864,14 +1932,28 @@ def run_regression_experiment(
 		output_dir=output_dir,
 		file_prefix=f"top_{feature_percent_tag}",
 	)
+	filtered_prediction_errors_path = save_regression_prediction_errors(
+		y_true=filtered_y_true,
+		y_pred=filtered_y_pred,
+		sample_index=X_test_raw.index,
+		output_dir=output_dir,
+		file_prefix=f"top_{feature_percent_tag}",
+	)
 
+	elapsed_seconds = time.perf_counter() - start_time
 	org_metrics_data = {"task": "regression", **org_metrics}
+	org_metrics_data["elapsed_seconds"] = elapsed_seconds
+	if org_prediction_errors_path is not None:
+		org_metrics_data["prediction_errors_path"] = str(org_prediction_errors_path)
 	filtered_metrics_data = {
 		"task": "regression",
 		"feature_percent": feature_percent,
 		"selected_feature_count": len(selected_df),
+		"elapsed_seconds": elapsed_seconds,
 		**filtered_metrics,
 	}
+	if filtered_prediction_errors_path is not None:
+		filtered_metrics_data["prediction_errors_path"] = str(filtered_prediction_errors_path)
 	save_json(org_metrics_data, metrics_dir / "ORG_test_metrics.json")
 	save_json(filtered_metrics_data, metrics_dir / f"top_{feature_percent_tag}_test_metrics.json")
 
@@ -1881,6 +1963,7 @@ def run_regression_experiment(
 	print(f"[OK] Top %{feature_percent} secilen feature sayisi: {len(selected_df)}")
 	print(f"[OK] Top %{feature_percent} R2: {filtered_metrics['regression_r2']:.6f}")
 	print(f"[OK] Top %{feature_percent} RMSE: {filtered_metrics['regression_rmse']:.6f}")
+	print(f"[OK] Calisma suresi: {elapsed_seconds:.2f} saniye")
 	print(f"[OK] Metrik dosyasi: {metrics_dir / f'top_{feature_percent_tag}_test_metrics.json'}")
 	return org_metrics["pearson_r"], filtered_metrics["pearson_r"]
 
@@ -2168,11 +2251,13 @@ def run_repeated_experiments(
 	Sonuc: (metric_values, average_metric)
 	"""
 	accuracy_values: list[float] = []
+	run_durations: list[float] = []
 	history_frames: list[pd.DataFrame] = []
 	dataset_folder = Path(convert_txt_dataset_to_csv(dataset_name)).stem
 
 	for run_idx in range(1, repeat_runs + 1):
 		print(f"\n[INFO] Calisma {run_idx}/{repeat_runs} basladi.")
+		run_start_time = time.perf_counter()
 		_, filtered_test_accuracy = main(
 			dataset_name=dataset_name,
 			target_column=target_column,
@@ -2198,6 +2283,9 @@ def run_repeated_experiments(
 			cluster_max_k=cluster_max_k,
 			save_training_plots=save_training_plots,
 		)
+		run_elapsed_seconds = time.perf_counter() - run_start_time
+		run_durations.append(run_elapsed_seconds)
+		print(f"[OK] Calisma {run_idx}/{repeat_runs} suresi: {run_elapsed_seconds:.2f} saniye")
 		accuracy_values.append(float(filtered_test_accuracy))
 		if save_training_plots and task in {"classification", "regression"}:
 			history_df = collect_repeated_run_history(
@@ -2215,18 +2303,24 @@ def run_repeated_experiments(
 				history_frames.append(history_df)
 		sorted_accuracy_values = sorted(accuracy_values, reverse=True)
 		accuracy_txt_path.write_text(
-			f"{accuracy_values}\nSirali {metric_name}: {sorted_accuracy_values}",
+			f"{accuracy_values}\nSirali {metric_name}: {sorted_accuracy_values}\n"
+			f"Run sureleri saniye: {[round(value, 3) for value in run_durations]}",
 			encoding="utf-8",
 		)
 
 	average_accuracy = sum(accuracy_values) / len(accuracy_values) if accuracy_values else 0.0
 	std_accuracy = float(np.std(accuracy_values, ddof=1)) if len(accuracy_values) > 1 else 0.0
+	average_duration = sum(run_durations) / len(run_durations) if run_durations else 0.0
+	std_duration = float(np.std(run_durations, ddof=1)) if len(run_durations) > 1 else 0.0
 	sorted_accuracy_values = sorted(accuracy_values, reverse=True)
 	output_text = (
 		f"{accuracy_values}\n"
 		f"Sirali {metric_name}: {sorted_accuracy_values}\n"
 		f"Ortalama {metric_name}: {average_accuracy:.6f}\n"
-		f"Std {metric_name}: {std_accuracy:.6f}"
+		f"Std {metric_name}: {std_accuracy:.6f}\n"
+		f"Run sureleri saniye: {[round(value, 3) for value in run_durations]}\n"
+		f"Ortalama sure saniye: {average_duration:.3f}\n"
+		f"Std sure saniye: {std_duration:.3f}"
 	)
 	accuracy_txt_path.write_text(output_text, encoding="utf-8")
 

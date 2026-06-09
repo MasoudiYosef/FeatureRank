@@ -1,0 +1,7 @@
+[0.9991406163736162]
+Sirali Pearson_r: [0.9991406163736162]
+Ortalama Pearson_r: 0.999141
+Std Pearson_r: 0.000000
+Run sureleri saniye: [42.972]
+Ortalama sure saniye: 42.972
+Std sure saniye: 0.000
