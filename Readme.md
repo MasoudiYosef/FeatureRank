@@ -201,3 +201,5 @@ BÜYÜK VERİLERDE;
         -> yaklaşık 20000 feature birleştir
         -> final autoencoder + classifier çalıştır
         -> final accuracy ver
+
+Air_data'da -200 label değerleri vardı silindi.

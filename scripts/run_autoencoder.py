@@ -25,6 +25,7 @@ from sklearn.metrics import (
 	silhouette_score,
 )
 from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
 from sklearn.metrics.pairwise import cosine_similarity
 
@@ -757,6 +758,9 @@ def train_and_evaluate_regression_pipeline(
 		random_state=random_state,
 		shuffle=True,
 	)
+	y_scaler = StandardScaler()
+	y_train_scaled = y_scaler.fit_transform(np.asarray(y_train_sub).reshape(-1, 1)).ravel().astype(np.float32)
+	y_val_scaled = y_scaler.transform(np.asarray(y_val).reshape(-1, 1)).ravel().astype(np.float32)
 
 	autoencoder_mse, autoencoder, encoder = train_autoencoder_model(
 		X_train_sub=X_train_sub,
@@ -795,10 +799,10 @@ def train_and_evaluate_regression_pipeline(
 
 	regressor_history = regressor.fit(
 		X_train_encoded,
-		y_train_sub.astype(np.float32),
+		y_train_scaled,
 		epochs=regressor_epochs,
 		batch_size=BATCH_SIZE,
-		validation_data=(X_val_encoded, y_val.astype(np.float32)),
+		validation_data=(X_val_encoded, y_val_scaled),
 		callbacks=callbacks,
 		verbose=1,
 	)
@@ -810,7 +814,8 @@ def train_and_evaluate_regression_pipeline(
 			plot_metrics=("mae", "loss"),
 		)
 
-	y_pred = regressor.predict(X_test_encoded, verbose=0).ravel()
+	y_pred_scaled = regressor.predict(X_test_encoded, verbose=0).ravel()
+	y_pred = y_scaler.inverse_transform(y_pred_scaled.reshape(-1, 1)).ravel()
 	y_true = y_test.astype(np.float32).ravel()
 	regression_mse = float(mean_squared_error(y_true, y_pred))
 	regression_rmse = float(np.sqrt(regression_mse))
@@ -832,6 +837,7 @@ def train_and_evaluate_regression_pipeline(
 		"regression_r2": regression_r2,
 		"cosine_similarity": cosine_sim,
 		"pearson_r": pearson_r,
+		"target_scaling": "standard",
 	}
 	#regression_r2 = model performansı / açıklama gücü
 	#pearson_r     = gerçek-tahmin korelasyonu
@@ -2252,8 +2258,10 @@ def run_repeated_experiments(
 	"""
 	accuracy_values: list[float] = []
 	run_durations: list[float] = []
+	regression_run_rows: list[dict] = []
 	history_frames: list[pd.DataFrame] = []
 	dataset_folder = Path(convert_txt_dataset_to_csv(dataset_name)).stem
+	feature_percent_tag = format_feature_percent_tag(feature_percent)
 
 	for run_idx in range(1, repeat_runs + 1):
 		print(f"\n[INFO] Calisma {run_idx}/{repeat_runs} basladi.")
@@ -2287,6 +2295,31 @@ def run_repeated_experiments(
 		run_durations.append(run_elapsed_seconds)
 		print(f"[OK] Calisma {run_idx}/{repeat_runs} suresi: {run_elapsed_seconds:.2f} saniye")
 		accuracy_values.append(float(filtered_test_accuracy))
+		if task == "regression":
+			regression_metrics_path = (
+				Path("outputs")
+				/ "autoencoder"
+				/ dataset_folder
+				/ "metrics"
+				/ f"top_{feature_percent_tag}_test_metrics.json"
+			)
+			if regression_metrics_path.exists():
+				with open(regression_metrics_path, "r", encoding="utf-8") as f:
+					regression_metrics = json.load(f)
+				regression_run_rows.append(
+					{
+						"run": run_idx,
+						"feature_percent": feature_percent,
+						"selected_feature_count": regression_metrics.get("selected_feature_count"),
+						"regression_mse": regression_metrics.get("regression_mse"),
+						"regression_rmse": regression_metrics.get("regression_rmse"),
+						"regression_mae": regression_metrics.get("regression_mae"),
+						"regression_r2": regression_metrics.get("regression_r2"),
+						"pearson_r": regression_metrics.get("pearson_r"),
+						"cosine_similarity": regression_metrics.get("cosine_similarity"),
+						"elapsed_seconds": run_elapsed_seconds,
+					}
+				)
 		if save_training_plots and task in {"classification", "regression"}:
 			history_df = collect_repeated_run_history(
 				dataset_folder=dataset_folder,
@@ -2302,8 +2335,27 @@ def run_repeated_experiments(
 			if history_df is not None:
 				history_frames.append(history_df)
 		sorted_accuracy_values = sorted(accuracy_values, reverse=True)
+		regression_error_text = ""
+		if task == "regression" and regression_run_rows:
+			mse_values = [
+				float(row["regression_mse"])
+				for row in regression_run_rows
+				if row.get("regression_mse") is not None
+			]
+			rmse_values = [
+				float(row["regression_rmse"])
+				for row in regression_run_rows
+				if row.get("regression_rmse") is not None
+			]
+			regression_error_text = (
+				f"\nMSE listesi: {mse_values}\n"
+				f"Sirali MSE (dusuk iyi): {sorted(mse_values)}\n"
+				f"RMSE listesi: {rmse_values}\n"
+				f"Sirali RMSE (dusuk iyi): {sorted(rmse_values)}"
+			)
 		accuracy_txt_path.write_text(
-			f"{accuracy_values}\nSirali {metric_name}: {sorted_accuracy_values}\n"
+			f"{accuracy_values}\nSirali {metric_name}: {sorted_accuracy_values}"
+			f"{regression_error_text}\n"
 			f"Run sureleri saniye: {[round(value, 3) for value in run_durations]}",
 			encoding="utf-8",
 		)
@@ -2313,18 +2365,44 @@ def run_repeated_experiments(
 	average_duration = sum(run_durations) / len(run_durations) if run_durations else 0.0
 	std_duration = float(np.std(run_durations, ddof=1)) if len(run_durations) > 1 else 0.0
 	sorted_accuracy_values = sorted(accuracy_values, reverse=True)
+	regression_error_text = ""
+	if task == "regression" and regression_run_rows:
+		mse_values = [
+			float(row["regression_mse"])
+			for row in regression_run_rows
+			if row.get("regression_mse") is not None
+		]
+		rmse_values = [
+			float(row["regression_rmse"])
+			for row in regression_run_rows
+			if row.get("regression_rmse") is not None
+		]
+		mse_mean = float(np.mean(mse_values)) if mse_values else float("nan")
+		mse_std = float(np.std(mse_values, ddof=1)) if len(mse_values) > 1 else 0.0
+		rmse_mean = float(np.mean(rmse_values)) if rmse_values else float("nan")
+		rmse_std = float(np.std(rmse_values, ddof=1)) if len(rmse_values) > 1 else 0.0
+		regression_error_text = (
+			f"MSE listesi: {mse_values}\n"
+			f"Sirali MSE (dusuk iyi): {sorted(mse_values)}\n"
+			f"Ortalama MSE: {mse_mean:.6f}\n"
+			f"Std MSE: {mse_std:.6f}\n"
+			f"RMSE listesi: {rmse_values}\n"
+			f"Sirali RMSE (dusuk iyi): {sorted(rmse_values)}\n"
+			f"Ortalama RMSE: {rmse_mean:.6f}\n"
+			f"Std RMSE: {rmse_std:.6f}\n"
+		)
 	output_text = (
 		f"{accuracy_values}\n"
 		f"Sirali {metric_name}: {sorted_accuracy_values}\n"
 		f"Ortalama {metric_name}: {average_accuracy:.6f}\n"
 		f"Std {metric_name}: {std_accuracy:.6f}\n"
+		f"{regression_error_text}"
 		f"Run sureleri saniye: {[round(value, 3) for value in run_durations]}\n"
 		f"Ortalama sure saniye: {average_duration:.3f}\n"
 		f"Std sure saniye: {std_duration:.3f}"
 	)
 	accuracy_txt_path.write_text(output_text, encoding="utf-8")
 
-	feature_percent_tag = format_feature_percent_tag(feature_percent)
 	if task == "clustering":
 		plot_output_dir = Path("outputs") / "clustering" / dataset_folder / "metrics"
 		boxplot_metric_name = "Silhouette"
@@ -2346,6 +2424,37 @@ def run_repeated_experiments(
 		file_prefix=f"top_{feature_percent_tag}",
 		metric_name=boxplot_metric_name,
 	)
+
+	if task == "regression" and regression_run_rows:
+		regression_runs_df = pd.DataFrame(regression_run_rows)
+		regression_runs_path = plot_output_dir / f"top_{feature_percent_tag}_regression_runs.csv"
+		regression_runs_df.to_csv(regression_runs_path, index=False)
+
+		rmse_values = regression_runs_df["regression_rmse"].dropna().astype(float).to_numpy()
+		selected_feature_counts = regression_runs_df["selected_feature_count"].dropna().astype(int)
+		n_runs = int(len(rmse_values))
+		rmse_mean = float(np.mean(rmse_values)) if n_runs else float("nan")
+		rmse_std = float(np.std(rmse_values, ddof=1)) if n_runs > 1 else 0.0
+		rmse_ci_half_width = float(1.96 * rmse_std / np.sqrt(n_runs)) if n_runs > 1 else 0.0
+		table_summary = {
+			"DS": dataset_folder.replace("_data", "").upper(),
+			"AL": "FeatureRank",
+			"NOF": int(selected_feature_counts.iloc[0]) if not selected_feature_counts.empty else None,
+			"ET": average_duration,
+			"ER": rmse_mean,
+			"ER_STD": rmse_std,
+			"ER_CI_1": rmse_mean - rmse_ci_half_width,
+			"ER_CI_2": rmse_mean + rmse_ci_half_width,
+			"repeat_runs": n_runs,
+			"feature_percent": feature_percent,
+			"runs_csv_path": str(regression_runs_path),
+		}
+		summary_csv_path = plot_output_dir / f"top_{feature_percent_tag}_regression_table_summary.csv"
+		summary_json_path = plot_output_dir / f"top_{feature_percent_tag}_regression_table_summary.json"
+		pd.DataFrame([table_summary]).to_csv(summary_csv_path, index=False)
+		save_json(table_summary, summary_json_path)
+		print(f"[OK] Regression run CSV: {regression_runs_path}")
+		print(f"[OK] Regression tablo ozeti CSV: {summary_csv_path}")
 
 	if save_training_plots and task in {"classification", "regression"} and history_frames:
 		history_dir = Path("outputs") / "autoencoder" / dataset_folder / "training_history"
