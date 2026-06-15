@@ -310,11 +310,27 @@ def save_metric_boxplot(
 
 	ensure_dir(output_dir)
 	metric_label = metric_name.lower()
+	values = np.asarray(metric_values, dtype=float)
 	plt.figure(figsize=(6, 5))
-	plt.boxplot(metric_values, labels=[metric_name], showmeans=True)
+	plt.boxplot(values, labels=[metric_name], showmeans=True)
+	if len(values) == 1:
+		x_positions = np.array([1.0])
+	else:
+		x_positions = 1.0 + np.linspace(-0.12, 0.12, len(values))
+	plt.scatter(
+		x_positions,
+		values,
+		s=24,
+		alpha=0.75,
+		color="#1f77b4",
+		edgecolors="white",
+		linewidths=0.4,
+		zorder=3,
+	)
 	plt.ylabel(metric_name)
 	plt.title(f"{file_prefix} {metric_label} boxplot")
 	plt.grid(True, axis="y", alpha=0.3)
+	plt.gca().ticklabel_format(axis="y", style="plain", useOffset=False)
 	plt.tight_layout()
 
 	plot_path = output_dir / f"{file_prefix}_{metric_label}_boxplot.png"
@@ -878,6 +894,7 @@ def evaluate_kmeans_range(
 		row = {
 			"k": k,
 			"inertia": float(model.inertia_),
+			"cluster_rmse": float(np.sqrt(model.inertia_ / X_cluster.shape[0])),
 			"silhouette_score": silhouette,
 		}
 		rows.append(row)
@@ -896,6 +913,7 @@ def save_cluster_evaluation_plots(scores_df: pd.DataFrame, output_dir: Path, fil
 		return
 
 	ensure_dir(output_dir)
+	silhouette_df = pd.DataFrame()
 	if "inertia" in scores_df.columns:
 		plt.figure(figsize=(8, 5))
 		plt.plot(scores_df["k"], scores_df["inertia"], marker="o")
@@ -923,6 +941,50 @@ def save_cluster_evaluation_plots(scores_df: pd.DataFrame, output_dir: Path, fil
 			plt.savefig(silhouette_path, dpi=150)
 			plt.close()
 			print(f"[OK] Silhouette plot: {silhouette_path}")
+
+	if "inertia" in scores_df.columns and not silhouette_df.empty:
+		best_idx = silhouette_df["silhouette_score"].idxmax()
+		best_k = int(silhouette_df.loc[best_idx, "k"])
+		best_silhouette = float(silhouette_df.loc[best_idx, "silhouette_score"])
+
+		fig, ax_inertia = plt.subplots(figsize=(9, 5))
+		inertia_line = ax_inertia.plot(
+			scores_df["k"],
+			scores_df["inertia"],
+			color="#1f77b4",
+			marker="o",
+			label="Inertia (Elbow)",
+		)
+		ax_inertia.set_xlabel("Number of clusters (k)")
+		ax_inertia.set_ylabel("Inertia / WCSS", color="#1f77b4")
+		ax_inertia.tick_params(axis="y", labelcolor="#1f77b4")
+		ax_inertia.grid(True, alpha=0.3)
+
+		ax_silhouette = ax_inertia.twinx()
+		silhouette_line = ax_silhouette.plot(
+			silhouette_df["k"],
+			silhouette_df["silhouette_score"],
+			color="#ff7f0e",
+			marker="s",
+			label="Silhouette score",
+		)
+		ax_silhouette.scatter([best_k], [best_silhouette], color="red", zorder=3, label=f"Best k={best_k}")
+		ax_silhouette.set_ylabel("Silhouette score", color="#ff7f0e")
+		ax_silhouette.tick_params(axis="y", labelcolor="#ff7f0e")
+		ax_inertia.axvline(best_k, color="red", linestyle="--", alpha=0.65)
+
+		lines = inertia_line + silhouette_line
+		labels = [line.get_label() for line in lines]
+		labels.append(f"Best k={best_k}")
+		handles = lines + [plt.Line2D([0], [0], color="red", marker="o", linestyle="--")]
+		ax_inertia.legend(handles, labels, loc="best")
+		plt.title(f"{file_prefix} elbow and silhouette analysis")
+		fig.tight_layout()
+
+		combined_path = output_dir / f"{file_prefix}_elbow_silhouette.png"
+		fig.savefig(combined_path, dpi=150)
+		plt.close(fig)
+		print(f"[OK] Combined elbow/silhouette plot: {combined_path}")
 
 
 def save_cluster_pca_scatter(
@@ -1237,6 +1299,7 @@ def run_clustering_experiment(
 		"best_k": int(org_best_row["k"]),
 		"silhouette_score": float(org_best_row["silhouette_score"]),
 		"inertia": float(org_best_row["inertia"]),
+		"cluster_rmse": float(org_best_row["cluster_rmse"]),
 		"elapsed_seconds": org_elapsed_seconds,
 	}
 	org_metrics_path = metrics_dir / "ORG_cluster_metrics.json"
@@ -1306,6 +1369,7 @@ def run_clustering_experiment(
 		"best_k": int(best_row["k"]),
 		"silhouette_score": float(best_row["silhouette_score"]),
 		"inertia": float(best_row["inertia"]),
+		"cluster_rmse": float(best_row["cluster_rmse"]),
 		"elapsed_seconds": elapsed_seconds,
 	}
 	metrics_path = metrics_dir / f"top_{feature_percent_tag}_cluster_metrics.json"
@@ -1313,15 +1377,17 @@ def run_clustering_experiment(
 
 	print("\n[OK] Clustering tamamlandi.")
 	print(f"[OK] ORG silhouette_score: {float(org_best_row['silhouette_score']):.6f}")
+	print(f"[OK] ORG cluster_rmse: {float(org_best_row['cluster_rmse']):.6f}")
 	print(f"[OK] ORG best k: {int(org_best_row['k'])}")
 	print(f"[OK] ORG metrik dosyasi: {org_metrics_path}")
 	print(f"[OK] Top %{feature_percent} secilen feature sayisi: {len(selected_df)}")
 	print(f"[OK] En iyi k: {int(best_row['k'])}")
 	print(f"[OK] En iyi silhouette_score: {float(best_row['silhouette_score']):.6f}")
+	print(f"[OK] Cluster RMSE: {float(best_row['cluster_rmse']):.6f}")
 	print(f"[OK] Calisma suresi: {elapsed_seconds:.2f} saniye")
 	print(f"[OK] Elbow/Inertia skor CSV: {scores_path}")
 	print(f"[OK] Cluster atamalari: {assignments_path}")
-	return float(best_row["silhouette_score"]), float(best_row["silhouette_score"])
+	return float(best_row["cluster_rmse"]), float(best_row["cluster_rmse"])
 
 
 def split_feature_names_into_chunks(feature_names: list[str], chunk_size: int) -> list[list[str]]:
@@ -2262,6 +2328,7 @@ def run_repeated_experiments(
 	history_frames: list[pd.DataFrame] = []
 	dataset_folder = Path(convert_txt_dataset_to_csv(dataset_name)).stem
 	feature_percent_tag = format_feature_percent_tag(feature_percent)
+	lower_is_better = metric_name in {"Cluster_RMSE"}
 
 	for run_idx in range(1, repeat_runs + 1):
 		print(f"\n[INFO] Calisma {run_idx}/{repeat_runs} basladi.")
@@ -2334,7 +2401,7 @@ def run_repeated_experiments(
 				)
 			if history_df is not None:
 				history_frames.append(history_df)
-		sorted_accuracy_values = sorted(accuracy_values, reverse=True)
+		sorted_accuracy_values = sorted(accuracy_values, reverse=not lower_is_better)
 		regression_error_text = ""
 		if task == "regression" and regression_run_rows:
 			mse_values = [
@@ -2364,7 +2431,7 @@ def run_repeated_experiments(
 	std_accuracy = float(np.std(accuracy_values, ddof=1)) if len(accuracy_values) > 1 else 0.0
 	average_duration = sum(run_durations) / len(run_durations) if run_durations else 0.0
 	std_duration = float(np.std(run_durations, ddof=1)) if len(run_durations) > 1 else 0.0
-	sorted_accuracy_values = sorted(accuracy_values, reverse=True)
+	sorted_accuracy_values = sorted(accuracy_values, reverse=not lower_is_better)
 	regression_error_text = ""
 	if task == "regression" and regression_run_rows:
 		mse_values = [
@@ -2405,7 +2472,7 @@ def run_repeated_experiments(
 
 	if task == "clustering":
 		plot_output_dir = Path("outputs") / "clustering" / dataset_folder / "metrics"
-		boxplot_metric_name = "Silhouette"
+		boxplot_metric_name = "Cluster_RMSE"
 	elif task == "regression":
 		plot_output_dir = Path("outputs") / "autoencoder" / dataset_folder / "metrics"
 		boxplot_metric_name = "Pearson_r"
@@ -2498,6 +2565,7 @@ if __name__ == "__main__":
 	parser.add_argument("--feature-chunk-size", type=int, default=DEFAULT_FEATURE_CHUNK_SIZE, help="Buyuk feature setlerinde her parcadaki feature sayisi")
 	parser.add_argument("--chunk-feature-threshold", type=int, default=DEFAULT_CHUNK_FEATURE_THRESHOLD, help="Feature sayisi bu esigi asarsa parcali akis kullanilir")
 	parser.add_argument("--disable-feature-chunking", action="store_true", help="Buyuk feature setlerinde otomatik parcali akisi kapatir")
+	parser.add_argument("--cluster-k", type=int, default=None, help="Clustering icin sabit k. Verilirse cluster-min-k ve cluster-max-k yerine bu k kullanilir")
 	parser.add_argument("--cluster-min-k", type=int, default=DEFAULT_CLUSTER_MIN_K, help="Clustering icin denenecek minimum k")
 	parser.add_argument("--cluster-max-k", type=int, default=DEFAULT_CLUSTER_MAX_K, help="Clustering icin denenecek maksimum k")
 	parser.add_argument("--save-training-plots", action="store_true", help="Classification egitim history CSV ve PNG grafiklerini kaydeder")
@@ -2515,13 +2583,22 @@ if __name__ == "__main__":
 	else:
 		autoencoder_early_stopping_patience = args.autoencoder_early_stopping_patience
 
+	cluster_min_k = args.cluster_min_k
+	cluster_max_k = args.cluster_max_k
+	if args.cluster_k is not None:
+		if args.cluster_k < 2:
+			raise ValueError("--cluster-k en az 2 olmali.")
+		cluster_min_k = args.cluster_k
+		cluster_max_k = args.cluster_k
+		print(f"[INFO] Sabit cluster k kullaniliyor: k={args.cluster_k}")
+
 	if args.accuracy_list_txt.strip():
 		accuracy_txt_path = Path(args.accuracy_list_txt)
 	else:
 		dataset_folder = Path(args.dataset_name).stem
 		feature_percent_tag = format_feature_percent_tag(args.feature_percent)
 		if args.task == "clustering":
-			accuracy_txt_path = Path("outputs") / "clustering" / dataset_folder / "metrics" / f"top_{feature_percent_tag}_silhouette_runs.txt"
+			accuracy_txt_path = Path("outputs") / "clustering" / dataset_folder / "metrics" / f"top_{feature_percent_tag}_cluster_rmse_runs.txt"
 		elif args.task == "regression":
 			accuracy_txt_path = Path("outputs") / "autoencoder" / dataset_folder / "metrics" / f"top_{feature_percent_tag}_pearson_r_runs.txt"
 		else:
@@ -2529,7 +2606,7 @@ if __name__ == "__main__":
 	ensure_dir(accuracy_txt_path.parent)
 
 	if args.task == "clustering":
-		metric_name = "Silhouette"
+		metric_name = "Cluster_RMSE"
 	elif args.task == "regression":
 		metric_name = "Pearson_r"
 	else:
@@ -2555,8 +2632,8 @@ if __name__ == "__main__":
 		classifier_early_stopping_monitor=args.classifier_early_stopping_monitor,
 		classifier_early_stopping_min_delta=args.classifier_early_stopping_min_delta,
 		autoencoder_early_stopping_min_delta=args.autoencoder_early_stopping_min_delta,
-		cluster_min_k=args.cluster_min_k,
-		cluster_max_k=args.cluster_max_k,
+		cluster_min_k=cluster_min_k,
+		cluster_max_k=cluster_max_k,
 		save_training_plots=args.save_training_plots,
 		repeat_runs=args.repeat_runs,
 		accuracy_txt_path=accuracy_txt_path,

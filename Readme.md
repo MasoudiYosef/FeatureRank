@@ -203,3 +203,8 @@ BÜYÜK VERİLERDE;
         -> final accuracy ver
 
 Air_data'da -200 label değerleri vardı silindi.
+
+Cluster best k kendi bulsun.
+    python scripts/run_autoencoder.py --dataset-name carcinom_data.csv --feature-percent 90 --task clustering
+Cluster k değerini kendim vereyim.
+    python scripts/run_autoencoder.py --dataset-name carcinom_data.csv --feature-percent 90 --task clustering --cluster-k 6
