@@ -19,15 +19,24 @@ import matplotlib.pyplot as plt
 from sklearn.cluster import KMeans
 from sklearn.metrics import (
 	accuracy_score,
+	average_precision_score,
+	confusion_matrix,
+	f1_score,
 	mean_absolute_error,
 	mean_squared_error,
+	precision_recall_curve,
+	precision_score,
 	r2_score,
+	recall_score,
+	roc_auc_score,
+	roc_curve,
 	silhouette_score,
 )
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
 from sklearn.metrics.pairwise import cosine_similarity
+from sklearn.svm import SVR
 
 # Proje kokunu import path'ine ekle
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -49,7 +58,7 @@ CLASSIFIER_VALIDATION_SPLIT = 0.1
 THRESHOLD = 0.5
 DEFAULT_CLASSIFIER_EPOCHS = 50
 DEFAULT_CLASSIFIER_HIDDEN_UNITS = (32, 16)
-DEFAULT_FEATURE_CHUNK_SIZE = 1000
+DEFAULT_FEATURE_CHUNK_SIZE = 10000
 DEFAULT_CHUNK_FEATURE_THRESHOLD = 50000
 DEFAULT_CLUSTER_MIN_K = 2
 DEFAULT_CLUSTER_MAX_K = 15
@@ -58,6 +67,13 @@ DEFAULT_AUTOENCODER_EARLY_STOPPING_PATIENCE = 0
 DEFAULT_EARLY_STOPPING_MIN_DELTA = 0.0
 DEFAULT_AUTOENCODER_EARLY_STOPPING_MIN_DELTA = 0.001
 DEFAULT_CLASSIFIER_EARLY_STOPPING_MONITOR = "val_accuracy"
+DEFAULT_REGRESSION_MODEL = "neural"
+DEFAULT_SVR_KERNEL = "rbf"
+DEFAULT_SVR_C = 1.0
+DEFAULT_SVR_EPSILON = 0.1
+DEFAULT_SVR_GAMMA = "scale"
+DEFAULT_KMEANS_REGRESSION_CLUSTERS = 5
+DEFAULT_KMEANS_REGRESSION_N_INIT = 10
 
 
 def set_reproducible(seed: int | None) -> None:
@@ -183,6 +199,13 @@ def parse_random_state(random_state_text: str | None) -> int | None:
 	return int(random_state_text)
 
 
+def parse_svr_gamma(gamma_text: str) -> str | float:
+	text = str(gamma_text).strip().lower()
+	if text in {"scale", "auto"}:
+		return text
+	return float(gamma_text)
+
+
 def save_training_history(
 	history: tf.keras.callbacks.History,
 	output_dir: Path,
@@ -262,6 +285,16 @@ def save_average_convergence(
 		average_df["average_val_loss"] = pd.concat(val_loss_series, axis=1).mean(axis=1)
 	average_df = average_df.reset_index()
 
+	loss_column = "average_val_loss" if "average_val_loss" in average_df.columns else "average_loss"
+	normalized_loss_column = None
+	if loss_column in average_df.columns:
+		first_loss_value = float(average_df[loss_column].dropna().iloc[0])
+		if np.isclose(first_loss_value, 0.0):
+			normalized_loss_column = loss_column
+		else:
+			normalized_loss_column = f"{loss_column}_normalized"
+			average_df[normalized_loss_column] = average_df[loss_column] / first_loss_value
+
 	csv_path = output_dir / f"{file_prefix}_average_convergence.csv"
 	average_df.to_csv(csv_path, index=False)
 	print(f"[OK] Average convergence CSV: {csv_path}")
@@ -282,14 +315,18 @@ def save_average_convergence(
 		plt.close()
 		print(f"[OK] Average accuracy convergence plot: {accuracy_plot_path}")
 
-	if "average_loss" in average_df.columns:
+	if loss_column in average_df.columns:
+		plot_loss_column = normalized_loss_column or loss_column
 		plt.figure(figsize=(8, 5))
-		plt.plot(average_df["epoch"], average_df["average_loss"], label="average_loss")
-		if "average_val_loss" in average_df.columns:
-			plt.plot(average_df["epoch"], average_df["average_val_loss"], label="average_val_loss")
+		plt.plot(average_df["epoch"], average_df[plot_loss_column], label=plot_loss_column)
 		plt.xlabel("Epoch")
-		plt.ylabel("Average Loss")
-		plt.title(f"{file_prefix} average error convergence")
+		if normalized_loss_column is not None:
+			plt.ylabel("Normalized Average Validation Loss" if loss_column == "average_val_loss" else "Normalized Average Loss")
+			plt.ylim(bottom=0.0)
+			plt.title(f"{file_prefix} {loss_column} convergence")
+		else:
+			plt.ylabel("Average Validation Loss" if loss_column == "average_val_loss" else "Average Loss")
+			plt.title(f"{file_prefix} {loss_column} convergence")
 		plt.legend()
 		plt.grid(True, alpha=0.3)
 		plt.tight_layout()
@@ -304,6 +341,7 @@ def save_metric_boxplot(
 	output_dir: Path,
 	file_prefix: str,
 	metric_name: str,
+	normalize_to_unit: bool = False,
 ) -> None:
 	if not metric_values:
 		return
@@ -311,8 +349,20 @@ def save_metric_boxplot(
 	ensure_dir(output_dir)
 	metric_label = metric_name.lower()
 	values = np.asarray(metric_values, dtype=float)
+	y_label = metric_name
+	title_metric_label = metric_label
+	if normalize_to_unit:
+		min_value = float(np.min(values))
+		max_value = float(np.max(values))
+		if np.isclose(max_value, min_value):
+			values = np.full_like(values, 0.5, dtype=float)
+		else:
+			values = (values - min_value) / (max_value - min_value)
+		y_label = f"Normalized {metric_name} (0-1)"
+		title_metric_label = f"normalized {metric_label}"
+
 	plt.figure(figsize=(6, 5))
-	plt.boxplot(values, labels=[metric_name], showmeans=True)
+	plt.boxplot(values, tick_labels=[metric_name], showmeans=True)
 	if len(values) == 1:
 		x_positions = np.array([1.0])
 	else:
@@ -327,8 +377,12 @@ def save_metric_boxplot(
 		linewidths=0.4,
 		zorder=3,
 	)
-	plt.ylabel(metric_name)
-	plt.title(f"{file_prefix} {metric_label} boxplot")
+	plt.ylabel(y_label)
+	if metric_name.lower() == "accuracy":
+		plt.ylim(0.65, 1.02)
+	elif normalize_to_unit:
+		plt.ylim(-0.03, 1.03)
+	plt.title(f"{file_prefix} {title_metric_label} boxplot")
 	plt.grid(True, axis="y", alpha=0.3)
 	plt.gca().ticklabel_format(axis="y", style="plain", useOffset=False)
 	plt.tight_layout()
@@ -379,36 +433,128 @@ def save_repeated_metric_distribution_plot(
 	plt.close()
 	print(f"[OK] Repeated {metric_name} distribution plot: {plot_path}")
 
-
 def save_regression_actual_vs_predicted_plot(
-	y_true: np.ndarray,
-	y_pred: np.ndarray,
-	output_dir: Path,
-	file_prefix: str,
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    output_dir: Path,
+    file_prefix: str,
+    top_n: int | None = None,
 ) -> None:
-	if len(y_true) == 0 or len(y_pred) == 0:
-		return
+    if len(y_true) == 0 or len(y_pred) == 0:
+        return
 
-	ensure_dir(output_dir)
-	y_true = np.asarray(y_true, dtype=float).ravel()
-	y_pred = np.asarray(y_pred, dtype=float).ravel()
-	min_value = float(min(np.min(y_true), np.min(y_pred)))
-	max_value = float(max(np.max(y_true), np.max(y_pred)))
+    ensure_dir(output_dir)
 
-	plt.figure(figsize=(7, 6))
-	plt.scatter(y_true, y_pred, alpha=0.75, s=28)
-	plt.plot([min_value, max_value], [min_value, max_value], color="#d62728", linestyle="--", linewidth=1.4)
-	plt.xlabel("Actual values")
-	plt.ylabel("Predicted values")
-	plt.title(f"{file_prefix} actual vs predicted")
-	plt.grid(True, alpha=0.3)
-	plt.tight_layout()
+    y_true = np.asarray(y_true, dtype=float).ravel()
+    y_pred = np.asarray(y_pred, dtype=float).ravel()
 
-	plot_path = output_dir / f"{file_prefix}_actual_vs_predicted.png"
-	plt.savefig(plot_path, dpi=150)
-	plt.close()
-	print(f"[OK] Actual vs predicted plot: {plot_path}")
+    if len(y_true) != len(y_pred):
+        raise ValueError(f"Regression true/pred length mismatch: {len(y_true)} != {len(y_pred)}")
 
+    if top_n is not None:
+        if top_n <= 0:
+            raise ValueError("actual_vs_predicted top_n pozitif olmali.")
+        top_n = min(top_n, len(y_true))
+        y_true_plot = y_true[:top_n]
+        y_pred_plot = y_pred[:top_n]
+    else:
+        y_true_plot = y_true
+        y_pred_plot = y_pred
+
+    # ---------------------------------------------------------
+    # NORMALIZATION
+    # Actual ve predicted aynı actual min-max ölçeğine göre normalize edilir.
+    # Böylece x=actual, y=predicted ilişkisi bozulmaz.
+    # ---------------------------------------------------------
+    actual_min = float(np.min(y_true_plot))
+    actual_max = float(np.max(y_true_plot))
+    actual_range = actual_max - actual_min
+
+    if np.isclose(actual_range, 0.0):
+        print(f"[WARN] Normalization skipped because actual range is zero: {file_prefix}")
+        y_true_norm = y_true_plot
+        y_pred_norm = y_pred_plot
+    else:
+        y_true_norm = (y_true_plot - actual_min) / actual_range
+        y_pred_norm = (y_pred_plot - actual_min) / actual_range
+
+    mse_value = float(mean_squared_error(y_true_norm, y_pred_norm))
+
+    rank_true = pd.Series(y_true_norm).rank().to_numpy()
+    rank_pred = pd.Series(y_pred_norm).rank().to_numpy()
+
+    if np.isclose(np.std(rank_true), 0.0) or np.isclose(np.std(rank_pred), 0.0):
+        spearman_corr = float("nan")
+    else:
+        spearman_corr = float(np.corrcoef(rank_true, rank_pred)[0, 1])
+
+    # n_points = len(y_true_norm)
+
+    # if n_points < 200:
+    #     point_alpha = 0.70
+    #     point_size = 35
+    # elif n_points < 1000:
+    #     point_alpha = 0.45
+    #     point_size = 24
+    # else:
+    #     point_alpha = 0.20
+    #     point_size = 16
+
+    fig, ax = plt.subplots(figsize=(8, 6))
+    ax.set_facecolor("white")
+
+    ax.scatter(
+        y_true_norm,
+        y_pred_norm,
+        color="black",
+        alpha=1.0,
+        s=35,
+        edgecolors="none",
+        zorder=3,
+        label="Samples",
+    )
+
+    # Normalize edilmiş grafikte ideal çizgi 0-1 arasıdır
+    ax.plot(
+        [0, 1],
+        [0, 1],
+        color="black",
+        linestyle="-",
+        linewidth=1.5,
+        zorder=2,
+        label="Ideal line",
+    )
+
+    ax.set_xlabel("Real Value", fontsize=12)
+    ax.set_ylabel("Predicted Value", fontsize=12)
+    ax.set_title("Scatter Plot Across All Datasets", fontsize=14)
+
+    ax.text(
+        0.05,
+        0.95,
+        f"Spearman Correlation Coefficient: {spearman_corr:.4f}\nMSE: {mse_value:.5f}",
+        transform=ax.transAxes,
+        fontsize=9,
+        verticalalignment="top",
+        bbox=dict(facecolor="white", alpha=0.85, edgecolor="none"),
+    )
+
+    ax.set_xlim(-0.03, 1.03)
+
+    # Tahminler 1'in biraz üstüne veya 0'ın altına taşarsa görünür kalsın
+    y_min = min(-0.03, float(np.min(y_pred_norm)) - 0.03)
+    y_max = max(1.03, float(np.max(y_pred_norm)) + 0.03)
+    ax.set_ylim(y_min, y_max)
+
+    ax.grid(True, alpha=0.25)
+
+    plt.tight_layout()
+
+    plot_path = output_dir / f"{file_prefix}_actual_vs_predicted.png"
+    plt.savefig(plot_path, dpi=200, bbox_inches="tight")
+    plt.close()
+
+    print(f"[OK] Normalized actual vs predicted plot: {plot_path}")
 
 def save_regression_prediction_errors(
 	y_true: np.ndarray,
@@ -445,6 +591,191 @@ def save_regression_prediction_errors(
 	predictions_df.to_csv(csv_path, index=False)
 	print(f"[OK] Regression prediction errors CSV: {csv_path}")
 	return csv_path
+
+
+def save_classification_predictions(
+	y_true: np.ndarray,
+	y_pred: np.ndarray,
+	y_score: np.ndarray,
+	output_dir: Path,
+	file_prefix: str,
+) -> Path | None:
+	if len(y_true) == 0 or len(y_pred) == 0 or len(y_score) == 0:
+		return None
+
+	ensure_dir(output_dir)
+	y_true = np.asarray(y_true, dtype=int).ravel()
+	y_pred = np.asarray(y_pred, dtype=int).ravel()
+	y_score = np.asarray(y_score, dtype=float).ravel()
+	if len(y_true) != len(y_pred) or len(y_true) != len(y_score):
+		raise ValueError(
+			f"Classification prediction length mismatch: "
+			f"y_true={len(y_true)}, y_pred={len(y_pred)}, y_score={len(y_score)}"
+		)
+
+	predictions_df = pd.DataFrame(
+		{
+			"sample_index": list(range(len(y_true))),
+			"true_label": y_true,
+			"predicted_label": y_pred,
+			"positive_class_score": y_score,
+		}
+	)
+	csv_path = output_dir / f"{file_prefix}_classification_predictions.csv"
+	predictions_df.to_csv(csv_path, index=False)
+	print(f"[OK] Classification predictions CSV: {csv_path}")
+	return csv_path
+
+
+def save_classification_confusion_matrix_plot(
+	y_true: np.ndarray,
+	y_pred: np.ndarray,
+	output_dir: Path,
+	file_prefix: str,
+) -> Path | None:
+	if len(y_true) == 0 or len(y_pred) == 0:
+		return None
+
+	ensure_dir(output_dir)
+	y_true = np.asarray(y_true, dtype=int).ravel()
+	y_pred = np.asarray(y_pred, dtype=int).ravel()
+	cm = confusion_matrix(y_true, y_pred, labels=[0, 1])
+
+	fig, ax = plt.subplots(figsize=(5, 4.5))
+	im = ax.imshow(cm, interpolation="nearest", cmap="Blues")
+	fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+	ax.set(
+		xticks=np.arange(2),
+		yticks=np.arange(2),
+		xticklabels=["0", "1"],
+		yticklabels=["0", "1"],
+		xlabel="Predicted label",
+		ylabel="True label",
+		title=f"{file_prefix} confusion matrix",
+	)
+
+	threshold = cm.max() / 2.0 if cm.size else 0.0
+	for i in range(cm.shape[0]):
+		for j in range(cm.shape[1]):
+			ax.text(
+				j,
+				i,
+				format(cm[i, j], "d"),
+				ha="center",
+				va="center",
+				color="white" if cm[i, j] > threshold else "black",
+			)
+
+	fig.tight_layout()
+	plot_path = output_dir / f"{file_prefix}_confusion_matrix.png"
+	fig.savefig(plot_path, dpi=150)
+	plt.close(fig)
+	print(f"[OK] Confusion matrix plot: {plot_path}")
+	return plot_path
+
+
+def compute_binary_classification_metrics(
+	y_true: np.ndarray,
+	y_pred: np.ndarray,
+	y_score: np.ndarray,
+) -> dict:
+	y_true = np.asarray(y_true, dtype=int).ravel()
+	y_pred = np.asarray(y_pred, dtype=int).ravel()
+	y_score = np.asarray(y_score, dtype=float).ravel()
+	if len(y_true) != len(y_pred) or len(y_true) != len(y_score):
+		raise ValueError(
+			f"Classification metric length mismatch: "
+			f"y_true={len(y_true)}, y_pred={len(y_pred)}, y_score={len(y_score)}"
+		)
+
+	metrics = {
+		"test_accuracy": float(accuracy_score(y_true, y_pred)),
+		"test_precision": float(precision_score(y_true, y_pred, zero_division=0)),
+		"test_recall": float(recall_score(y_true, y_pred, zero_division=0)),
+		"test_f1": float(f1_score(y_true, y_pred, zero_division=0)),
+	}
+	if len(np.unique(y_true)) < 2:
+		metrics["average_precision"] = None
+		metrics["roc_auc"] = None
+	else:
+		metrics["average_precision"] = float(average_precision_score(y_true, y_score))
+		metrics["roc_auc"] = float(roc_auc_score(y_true, y_score))
+	return metrics
+
+
+def save_classification_precision_recall_plot(
+	y_true: np.ndarray,
+	y_score: np.ndarray,
+	output_dir: Path,
+	file_prefix: str,
+) -> Path | None:
+	if len(y_true) == 0 or len(y_score) == 0:
+		return None
+
+	ensure_dir(output_dir)
+	y_true = np.asarray(y_true, dtype=int).ravel()
+	y_score = np.asarray(y_score, dtype=float).ravel()
+	if len(y_true) != len(y_score):
+		raise ValueError(f"PR curve length mismatch: y_true={len(y_true)}, y_score={len(y_score)}")
+	if len(np.unique(y_true)) < 2:
+		print(f"[WARN] PR curve cizilemedi, test setinde tek sinif var: {file_prefix}")
+		return None
+
+	precision, recall, _ = precision_recall_curve(y_true, y_score)
+	average_precision = float(average_precision_score(y_true, y_score))
+
+	plt.figure(figsize=(6, 5))
+	plt.plot(recall, precision, linewidth=1.8, label=f"AP={average_precision:.4f}")
+	plt.xlabel("Recall")
+	plt.ylabel("Precision")
+	plt.title(f"{file_prefix} precision-recall curve")
+	plt.grid(True, alpha=0.3)
+	plt.legend(loc="best")
+	plt.tight_layout()
+
+	plot_path = output_dir / f"{file_prefix}_precision_recall_curve.png"
+	plt.savefig(plot_path, dpi=150)
+	plt.close()
+	print(f"[OK] Precision-recall plot: {plot_path}")
+	return plot_path
+
+
+def save_classification_roc_plot(
+	y_true: np.ndarray,
+	y_score: np.ndarray,
+	output_dir: Path,
+	file_prefix: str,
+) -> Path | None:
+	if len(y_true) == 0 or len(y_score) == 0:
+		return None
+
+	ensure_dir(output_dir)
+	y_true = np.asarray(y_true, dtype=int).ravel()
+	y_score = np.asarray(y_score, dtype=float).ravel()
+	if len(y_true) != len(y_score):
+		raise ValueError(f"ROC curve length mismatch: y_true={len(y_true)}, y_score={len(y_score)}")
+	if len(np.unique(y_true)) < 2:
+		print(f"[WARN] ROC curve cizilemedi, test setinde tek sinif var: {file_prefix}")
+		return None
+
+	fpr, tpr, _ = roc_curve(y_true, y_score)
+	roc_auc = float(roc_auc_score(y_true, y_score))
+
+	plt.figure(figsize=(6, 5))
+	plt.plot(fpr, tpr, linewidth=1.8, label=f"AUC={roc_auc:.4f}")
+	plt.plot([0, 1], [0, 1], linestyle="--", color="gray", linewidth=1.0, label="Random")
+	plt.xlabel("False Positive Rate")
+	plt.ylabel("True Positive Rate")
+	plt.title(f"{file_prefix} ROC curve")
+	plt.grid(True, alpha=0.3)
+	plt.legend(loc="best")
+	plt.tight_layout()
+
+	plot_path = output_dir / f"{file_prefix}_roc_curve.png"
+	plt.savefig(plot_path, dpi=150)
+	plt.close()
+	print(f"[OK] ROC plot: {plot_path}")
+	return plot_path
 
 
 def extract_final_history_metric_values(history_frames: list[pd.DataFrame], metric_name: str) -> list[float]:
@@ -657,7 +988,7 @@ def train_and_evaluate_pipeline(
 	autoencoder_early_stopping_min_delta: float = DEFAULT_AUTOENCODER_EARLY_STOPPING_MIN_DELTA,
 	history_output_dir: Path | None = None,
 	history_prefix: str | None = None,
-) -> tuple[float, float, tf.keras.Model, tf.keras.Model, np.ndarray]:
+) -> tuple[float, float, tf.keras.Model, tf.keras.Model, np.ndarray, np.ndarray, np.ndarray]:
 	X_train_sub, X_val, y_train_sub, y_val = train_test_split(
 		X_train,
 		y_train,
@@ -743,10 +1074,10 @@ def train_and_evaluate_pipeline(
 		raise ValueError(
 			f"Prediction length {len(y_pred)} != y_test length {len(y_test)}"
 		)
-	
+		
 	test_accuracy = float(accuracy_score(y_test.astype(int), y_pred))
 	print("classifier output shape:", classifier.output_shape)
-	return test_mse, test_accuracy, autoencoder, encoder,X_train_sub
+	return test_mse, test_accuracy, autoencoder, encoder, X_train_sub, y_pred, y_pred_prob.ravel()
 
 
 def train_and_evaluate_regression_pipeline(
@@ -760,13 +1091,24 @@ def train_and_evaluate_regression_pipeline(
 	regressor_hidden_units: tuple[int, ...],
 	regressor_dropout_rates: tuple[float, ...] | None,
 	regressor_learning_rate: float,
+	regression_model: str = DEFAULT_REGRESSION_MODEL,
+	svr_kernel: str = DEFAULT_SVR_KERNEL,
+	svr_c: float = DEFAULT_SVR_C,
+	svr_epsilon: float = DEFAULT_SVR_EPSILON,
+	svr_gamma: str | float = DEFAULT_SVR_GAMMA,
+	kmeans_regression_clusters: int = DEFAULT_KMEANS_REGRESSION_CLUSTERS,
+	kmeans_regression_n_init: int = DEFAULT_KMEANS_REGRESSION_N_INIT,
 	regressor_early_stopping_patience: int | None = None,
 	autoencoder_early_stopping_patience: int | None = None,
 	regressor_early_stopping_min_delta: float = DEFAULT_EARLY_STOPPING_MIN_DELTA,
 	autoencoder_early_stopping_min_delta: float = DEFAULT_AUTOENCODER_EARLY_STOPPING_MIN_DELTA,
 	history_output_dir: Path | None = None,
 	history_prefix: str | None = None,
-) -> tuple[dict, tf.keras.Model, tf.keras.Model, np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[dict, object, tf.keras.Model, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+	regression_model = regression_model.lower().strip()
+	if regression_model not in {"neural", "svr", "kmeans"}:
+		raise ValueError("regression_model 'neural', 'svr' veya 'kmeans' olmali.")
+
 	X_train_sub, X_val, y_train_sub, y_val = train_test_split(
 		X_train,
 		y_train,
@@ -793,44 +1135,84 @@ def train_and_evaluate_regression_pipeline(
 	X_val_encoded = encoder.predict(X_val, verbose=0).astype(np.float32)
 	X_test_encoded = encoder.predict(X_test, verbose=0).astype(np.float32)
 
-	regressor = build_latent_regressor(
-		input_dim=X_train_encoded.shape[1],
-		hidden_units=regressor_hidden_units,
-		dropout_rates=regressor_dropout_rates,
-		learning_rate=regressor_learning_rate,
-	)
-
-	callbacks: list[tf.keras.callbacks.Callback] = []
-	if regressor_early_stopping_patience is not None and regressor_early_stopping_patience > 0:
-		callbacks.append(
-			tf.keras.callbacks.EarlyStopping(
-				monitor="val_loss",
-				patience=regressor_early_stopping_patience,
-				min_delta=regressor_early_stopping_min_delta,
-				restore_best_weights=True,
-				mode="min",
-				verbose=1,
+	if regression_model == "svr":
+		regressor = SVR(
+			kernel=svr_kernel,
+			C=svr_c,
+			epsilon=svr_epsilon,
+			gamma=svr_gamma,
+		)
+		regressor.fit(X_train_encoded, y_train_scaled)
+		y_train_pred_scaled = regressor.predict(X_train_encoded).ravel()
+		y_pred_scaled = regressor.predict(X_test_encoded).ravel()
+	elif regression_model == "kmeans":
+		if kmeans_regression_clusters < 1:
+			raise ValueError("kmeans-regression-clusters en az 1 olmali.")
+		effective_cluster_count = min(kmeans_regression_clusters, X_train_encoded.shape[0])
+		regressor = KMeans(
+			n_clusters=effective_cluster_count,
+			random_state=random_state,
+			n_init=kmeans_regression_n_init,
+		)
+		train_cluster_labels = regressor.fit_predict(X_train_encoded)
+		global_target_mean = float(np.mean(y_train_scaled))
+		cluster_target_means = {}
+		for cluster_id in range(effective_cluster_count):
+			cluster_values = y_train_scaled[train_cluster_labels == cluster_id]
+			cluster_target_means[cluster_id] = (
+				float(np.mean(cluster_values)) if len(cluster_values) > 0 else global_target_mean
 			)
+		test_cluster_labels = regressor.predict(X_test_encoded)
+		y_train_pred_scaled = np.asarray(
+			[cluster_target_means[int(cluster_id)] for cluster_id in train_cluster_labels],
+			dtype=np.float32,
+		)
+		y_pred_scaled = np.asarray(
+			[cluster_target_means[int(cluster_id)] for cluster_id in test_cluster_labels],
+			dtype=np.float32,
+		)
+	else:
+		regressor = build_latent_regressor(
+			input_dim=X_train_encoded.shape[1],
+			hidden_units=regressor_hidden_units,
+			dropout_rates=regressor_dropout_rates,
+			learning_rate=regressor_learning_rate,
 		)
 
-	regressor_history = regressor.fit(
-		X_train_encoded,
-		y_train_scaled,
-		epochs=regressor_epochs,
-		batch_size=BATCH_SIZE,
-		validation_data=(X_val_encoded, y_val_scaled),
-		callbacks=callbacks,
-		verbose=1,
-	)
-	if history_output_dir is not None and history_prefix is not None:
-		save_training_history(
-			history=regressor_history,
-			output_dir=history_output_dir,
-			file_prefix=f"{history_prefix}_regressor",
-			plot_metrics=("mae", "loss"),
-		)
+		callbacks: list[tf.keras.callbacks.Callback] = []
+		if regressor_early_stopping_patience is not None and regressor_early_stopping_patience > 0:
+			callbacks.append(
+				tf.keras.callbacks.EarlyStopping(
+					monitor="val_loss",
+					patience=regressor_early_stopping_patience,
+					min_delta=regressor_early_stopping_min_delta,
+					restore_best_weights=True,
+					mode="min",
+					verbose=1,
+				)
+			)
 
-	y_pred_scaled = regressor.predict(X_test_encoded, verbose=0).ravel()
+		regressor_history = regressor.fit(
+			X_train_encoded,
+			y_train_scaled,
+			epochs=regressor_epochs,
+			batch_size=BATCH_SIZE,
+			validation_data=(X_val_encoded, y_val_scaled),
+			callbacks=callbacks,
+			verbose=1,
+		)
+		if history_output_dir is not None and history_prefix is not None:
+			save_training_history(
+				history=regressor_history,
+				output_dir=history_output_dir,
+				file_prefix=f"{history_prefix}_regressor",
+				plot_metrics=("mae", "loss"),
+			)
+		y_train_pred_scaled = regressor.predict(X_train_encoded, verbose=0).ravel()
+		y_pred_scaled = regressor.predict(X_test_encoded, verbose=0).ravel()
+
+	y_train_pred = y_scaler.inverse_transform(y_train_pred_scaled.reshape(-1, 1)).ravel()
+	y_train_true = y_train_sub.astype(np.float32).ravel()
 	y_pred = y_scaler.inverse_transform(y_pred_scaled.reshape(-1, 1)).ravel()
 	y_true = y_test.astype(np.float32).ravel()
 	regression_mse = float(mean_squared_error(y_true, y_pred))
@@ -853,12 +1235,40 @@ def train_and_evaluate_regression_pipeline(
 		"regression_r2": regression_r2,
 		"cosine_similarity": cosine_sim,
 		"pearson_r": pearson_r,
+		"correlation": pearson_r,
 		"target_scaling": "standard",
+		"regression_model": regression_model,
 	}
+	if regression_model == "svr":
+		metrics.update(
+			{
+				"svr_kernel": svr_kernel,
+				"svr_c": svr_c,
+				"svr_epsilon": svr_epsilon,
+				"svr_gamma": svr_gamma,
+			}
+		)
+	elif regression_model == "kmeans":
+		metrics.update(
+			{
+				"kmeans_regression_clusters": int(kmeans_regression_clusters),
+				"kmeans_regression_effective_clusters": int(min(kmeans_regression_clusters, X_train_encoded.shape[0])),
+				"kmeans_regression_n_init": int(kmeans_regression_n_init),
+			}
+		)
 	#regression_r2 = model performansı / açıklama gücü
 	#pearson_r     = gerçek-tahmin korelasyonu
-	print("regressor output shape:", regressor.output_shape)
-	return metrics, autoencoder, encoder, X_train_sub, y_true, y_pred
+	if regression_model == "neural":
+		print("regressor output shape:", regressor.output_shape)
+	elif regression_model == "svr":
+		print(f"regressor model: SVR(kernel={svr_kernel}, C={svr_c}, epsilon={svr_epsilon}, gamma={svr_gamma})")
+	else:
+		print(
+			"regressor model: "
+			f"KMeansRegression(k={min(kmeans_regression_clusters, X_train_encoded.shape[0])}, "
+			f"n_init={kmeans_regression_n_init})"
+		)
+	return metrics, autoencoder, encoder, X_train_sub, y_true, y_pred, y_train_true, y_train_pred
 
 
 def normalize_cluster_k_range(min_k: int, max_k: int, sample_count: int) -> tuple[int, int]:
@@ -1481,7 +1891,7 @@ def run_chunked_binary_experiment(
 		X_train_chunk = X_train_chunk.astype(np.float32)
 		X_test_chunk = X_test_chunk.astype(np.float32)
 
-		chunk_test_mse, chunk_test_accuracy, chunk_autoencoder, _, chunk_train_sub = train_and_evaluate_pipeline(
+		chunk_test_mse, chunk_test_accuracy, chunk_autoencoder, _, chunk_train_sub, _, _ = train_and_evaluate_pipeline(
 			X_train_chunk,
 			X_test_chunk,
 			y_train,
@@ -1572,7 +1982,7 @@ def run_chunked_binary_experiment(
 		f"\n[INFO] Chunk top feature'lari birlestirildi: "
 		f"{len(merged_feature_names)} feature. Final egitim basliyor."
 	)
-	final_test_mse, final_test_accuracy, _, _, _ = train_and_evaluate_pipeline(
+	final_test_mse, final_test_accuracy, _, _, _, final_y_pred, final_y_score = train_and_evaluate_pipeline(
 		X_train_merged,
 		X_test_merged,
 		y_train,
@@ -1592,6 +2002,36 @@ def run_chunked_binary_experiment(
 		history_prefix=f"chunked_top_{feature_percent_tag}_final" if save_training_plots else None,
 	)
 
+	final_predictions_path = save_classification_predictions(
+		y_true=y_test,
+		y_pred=final_y_pred,
+		y_score=final_y_score,
+		output_dir=output_dir,
+		file_prefix=f"top_{feature_percent_tag}",
+	)
+	final_classification_metrics = compute_binary_classification_metrics(
+		y_true=y_test,
+		y_pred=final_y_pred,
+		y_score=final_y_score,
+	)
+	final_confusion_matrix_path = save_classification_confusion_matrix_plot(
+		y_true=y_test,
+		y_pred=final_y_pred,
+		output_dir=output_dir,
+		file_prefix=f"top_{feature_percent_tag}",
+	)
+	final_precision_recall_path = save_classification_precision_recall_plot(
+		y_true=y_test,
+		y_score=final_y_score,
+		output_dir=output_dir,
+		file_prefix=f"top_{feature_percent_tag}",
+	)
+	final_roc_path = save_classification_roc_plot(
+		y_true=y_test,
+		y_score=final_y_score,
+		output_dir=output_dir,
+		file_prefix=f"top_{feature_percent_tag}",
+	)
 	final_metrics_data = {
 		"chunked_feature_selection": True,
 		"feature_percent": feature_percent,
@@ -1600,13 +2040,21 @@ def run_chunked_binary_experiment(
 		"chunk_count": len(feature_chunks),
 		"merged_feature_count": len(merged_feature_names),
 		"test_mse": final_test_mse,
-		"test_accuracy": final_test_accuracy,
 		"threshold": THRESHOLD,
 		"chunk_summaries": chunk_summaries,
 		"all_chunk_selected_features_path": str(all_chunk_selected_path),
 		"merged_selected_features_path": str(merged_selected_path),
 		"merged_dataset_path": str(merged_dataset_path),
 	}
+	final_metrics_data.update(final_classification_metrics)
+	if final_predictions_path is not None:
+		final_metrics_data["classification_predictions_path"] = str(final_predictions_path)
+	if final_confusion_matrix_path is not None:
+		final_metrics_data["confusion_matrix_path"] = str(final_confusion_matrix_path)
+	if final_precision_recall_path is not None:
+		final_metrics_data["precision_recall_curve_path"] = str(final_precision_recall_path)
+	if final_roc_path is not None:
+		final_metrics_data["roc_curve_path"] = str(final_roc_path)
 	if current_class_label is not None and class_counts is not None:
 		final_metrics_data["current_class_label"] = current_class_label
 		final_metrics_data["class_counts"] = class_counts
@@ -1715,7 +2163,7 @@ def run_binary_experiment(
 	if save_training_plots:
 		ensure_dir(history_dir)
 
-	test_mse, test_accuracy, autoencoder, _, X_train_sub_used = train_and_evaluate_pipeline(
+	test_mse, test_accuracy, autoencoder, _, X_train_sub_used, org_y_pred, org_y_score = train_and_evaluate_pipeline(
 		X_train,
 		X_test,
 		y_train,
@@ -1769,6 +2217,8 @@ def run_binary_experiment(
 	if len(selected_df) == len(feature_names):
 		filtered_test_mse = test_mse
 		filtered_test_accuracy = test_accuracy
+		filtered_y_pred = org_y_pred
+		filtered_y_score = org_y_score
 		print("[INFO] Top %100 tum feature'lari iceriyor. ORG sonucu yeniden egitilmeden kullaniliyor.")
 	else:
 		selected_feature_names = selected_df["feature_name"].tolist()
@@ -1778,7 +2228,7 @@ def run_binary_experiment(
 		# Ensure consistent float32 dtype
 		X_train_filtered = X_train_filtered.astype(np.float32)
 		X_test_filtered = X_test_filtered.astype(np.float32)
-		filtered_test_mse, filtered_test_accuracy, _, _,_= train_and_evaluate_pipeline(
+		filtered_test_mse, filtered_test_accuracy, _, _, _, filtered_y_pred, filtered_y_score = train_and_evaluate_pipeline(
 			X_train_filtered,
 			X_test_filtered,
 			y_train_filtered,
@@ -1799,12 +2249,80 @@ def run_binary_experiment(
 		)
 
 	elapsed_seconds = time.perf_counter() - start_time
+	org_predictions_path = save_classification_predictions(
+		y_true=y_test,
+		y_pred=org_y_pred,
+		y_score=org_y_score,
+		output_dir=output_dir,
+		file_prefix="ORG",
+	)
+	org_classification_metrics = compute_binary_classification_metrics(
+		y_true=y_test,
+		y_pred=org_y_pred,
+		y_score=org_y_score,
+	)
+	org_confusion_matrix_path = save_classification_confusion_matrix_plot(
+		y_true=y_test,
+		y_pred=org_y_pred,
+		output_dir=output_dir,
+		file_prefix="ORG",
+	)
+	org_precision_recall_path = save_classification_precision_recall_plot(
+		y_true=y_test,
+		y_score=org_y_score,
+		output_dir=output_dir,
+		file_prefix="ORG",
+	)
+	org_roc_path = save_classification_roc_plot(
+		y_true=y_test,
+		y_score=org_y_score,
+		output_dir=output_dir,
+		file_prefix="ORG",
+	)
+	filtered_predictions_path = save_classification_predictions(
+		y_true=y_test_filtered,
+		y_pred=filtered_y_pred,
+		y_score=filtered_y_score,
+		output_dir=output_dir,
+		file_prefix=f"top_{feature_percent_tag}",
+	)
+	filtered_classification_metrics = compute_binary_classification_metrics(
+		y_true=y_test_filtered,
+		y_pred=filtered_y_pred,
+		y_score=filtered_y_score,
+	)
+	filtered_confusion_matrix_path = save_classification_confusion_matrix_plot(
+		y_true=y_test_filtered,
+		y_pred=filtered_y_pred,
+		output_dir=output_dir,
+		file_prefix=f"top_{feature_percent_tag}",
+	)
+	filtered_precision_recall_path = save_classification_precision_recall_plot(
+		y_true=y_test_filtered,
+		y_score=filtered_y_score,
+		output_dir=output_dir,
+		file_prefix=f"top_{feature_percent_tag}",
+	)
+	filtered_roc_path = save_classification_roc_plot(
+		y_true=y_test_filtered,
+		y_score=filtered_y_score,
+		output_dir=output_dir,
+		file_prefix=f"top_{feature_percent_tag}",
+	)
 	org_metrics_data = {
 		"test_mse": test_mse,
-		"test_accuracy": test_accuracy,
 		"threshold": THRESHOLD,
 		"elapsed_seconds": elapsed_seconds,
 	}
+	org_metrics_data.update(org_classification_metrics)
+	if org_predictions_path is not None:
+		org_metrics_data["classification_predictions_path"] = str(org_predictions_path)
+	if org_confusion_matrix_path is not None:
+		org_metrics_data["confusion_matrix_path"] = str(org_confusion_matrix_path)
+	if org_precision_recall_path is not None:
+		org_metrics_data["precision_recall_curve_path"] = str(org_precision_recall_path)
+	if org_roc_path is not None:
+		org_metrics_data["roc_curve_path"] = str(org_roc_path)
 	if current_class_label is not None and class_counts is not None:
 		org_metrics_data["current_class_label"] = current_class_label
 		org_metrics_data["class_counts"] = class_counts
@@ -1825,10 +2343,18 @@ def run_binary_experiment(
 		"feature_percent": feature_percent,
 		"selected_feature_count": len(selected_df),
 		"test_mse": filtered_test_mse,
-		"test_accuracy": filtered_test_accuracy,
 		"threshold": THRESHOLD,
 		"elapsed_seconds": elapsed_seconds,
 	}
+	filtered_metrics_data.update(filtered_classification_metrics)
+	if filtered_predictions_path is not None:
+		filtered_metrics_data["classification_predictions_path"] = str(filtered_predictions_path)
+	if filtered_confusion_matrix_path is not None:
+		filtered_metrics_data["confusion_matrix_path"] = str(filtered_confusion_matrix_path)
+	if filtered_precision_recall_path is not None:
+		filtered_metrics_data["precision_recall_curve_path"] = str(filtered_precision_recall_path)
+	if filtered_roc_path is not None:
+		filtered_metrics_data["roc_curve_path"] = str(filtered_roc_path)
 	if current_class_label is not None and class_counts is not None:
 		filtered_metrics_data["current_class_label"] = current_class_label
 		filtered_metrics_data["class_counts"] = class_counts
@@ -1874,11 +2400,19 @@ def run_regression_experiment(
 	classifier_hidden_units: tuple[int, ...],
 	classifier_dropout_rates: tuple[float, ...] | None,
 	classifier_learning_rate: float,
+	regression_model: str = DEFAULT_REGRESSION_MODEL,
+	svr_kernel: str = DEFAULT_SVR_KERNEL,
+	svr_c: float = DEFAULT_SVR_C,
+	svr_epsilon: float = DEFAULT_SVR_EPSILON,
+	svr_gamma: str | float = DEFAULT_SVR_GAMMA,
+	kmeans_regression_clusters: int = DEFAULT_KMEANS_REGRESSION_CLUSTERS,
+	kmeans_regression_n_init: int = DEFAULT_KMEANS_REGRESSION_N_INIT,
 	classifier_early_stopping_patience: int | None = DEFAULT_EARLY_STOPPING_PATIENCE,
 	autoencoder_early_stopping_patience: int | None = DEFAULT_AUTOENCODER_EARLY_STOPPING_PATIENCE,
 	classifier_early_stopping_min_delta: float = DEFAULT_EARLY_STOPPING_MIN_DELTA,
 	autoencoder_early_stopping_min_delta: float = DEFAULT_AUTOENCODER_EARLY_STOPPING_MIN_DELTA,
 	save_training_plots: bool = False,
+	actual_predicted_top_n: int | None = None,
 ) -> tuple[float, float]:
 	start_time = time.perf_counter()
 	processed = preprocess_data(
@@ -1909,7 +2443,7 @@ def run_regression_experiment(
 	if save_training_plots:
 		ensure_dir(history_dir)
 
-	org_metrics, autoencoder, _, X_train_sub_used, org_y_true, org_y_pred = train_and_evaluate_regression_pipeline(
+	org_metrics, autoencoder, _, X_train_sub_used, org_y_true, org_y_pred, org_train_y_true, org_train_y_pred = train_and_evaluate_regression_pipeline(
 		X_train=X_train,
 		X_test=X_test,
 		y_train=y_train,
@@ -1920,6 +2454,13 @@ def run_regression_experiment(
 		regressor_hidden_units=classifier_hidden_units,
 		regressor_dropout_rates=classifier_dropout_rates,
 		regressor_learning_rate=classifier_learning_rate,
+		regression_model=regression_model,
+		svr_kernel=svr_kernel,
+		svr_c=svr_c,
+		svr_epsilon=svr_epsilon,
+		svr_gamma=svr_gamma,
+		kmeans_regression_clusters=kmeans_regression_clusters,
+		kmeans_regression_n_init=kmeans_regression_n_init,
 		regressor_early_stopping_patience=classifier_early_stopping_patience,
 		autoencoder_early_stopping_patience=autoencoder_early_stopping_patience,
 		regressor_early_stopping_min_delta=classifier_early_stopping_min_delta,
@@ -1932,6 +2473,7 @@ def run_regression_experiment(
 		y_pred=org_y_pred,
 		output_dir=output_dir,
 		file_prefix="ORG",
+		top_n=actual_predicted_top_n,
 	)
 	org_prediction_errors_path = save_regression_prediction_errors(
 		y_true=org_y_true,
@@ -1939,6 +2481,13 @@ def run_regression_experiment(
 		sample_index=X_test_raw.index,
 		output_dir=output_dir,
 		file_prefix="ORG",
+	)
+	org_train_prediction_errors_path = save_regression_prediction_errors(
+		y_true=org_train_y_true,
+		y_pred=org_train_y_pred,
+		sample_index=range(len(org_train_y_true)),
+		output_dir=output_dir,
+		file_prefix="ORG_train",
 	)
 
 	feature_names = X_train_raw.columns.tolist()
@@ -1974,13 +2523,15 @@ def run_regression_experiment(
 		filtered_metrics = dict(org_metrics)
 		filtered_y_true = org_y_true
 		filtered_y_pred = org_y_pred
+		filtered_train_y_true = org_train_y_true
+		filtered_train_y_pred = org_train_y_pred
 		print("[INFO] Top %100 tum feature'lari iceriyor. ORG regression sonucu yeniden egitilmeden kullaniliyor.")
 	else:
 		selected_feature_names = selected_df["feature_name"].tolist()
 		X_train_filtered_raw = X_train_raw[selected_feature_names]
 		X_test_filtered_raw = X_test_raw[selected_feature_names]
 		X_train_filtered, X_test_filtered, _ = scale_data(X_train_filtered_raw, X_test_filtered_raw)
-		filtered_metrics, _, _, _, filtered_y_true, filtered_y_pred = train_and_evaluate_regression_pipeline(
+		filtered_metrics, _, _, _, filtered_y_true, filtered_y_pred, filtered_train_y_true, filtered_train_y_pred = train_and_evaluate_regression_pipeline(
 			X_train=X_train_filtered.astype(np.float32),
 			X_test=X_test_filtered.astype(np.float32),
 			y_train=y_train,
@@ -1991,6 +2542,13 @@ def run_regression_experiment(
 			regressor_hidden_units=classifier_hidden_units,
 			regressor_dropout_rates=classifier_dropout_rates,
 			regressor_learning_rate=classifier_learning_rate,
+			regression_model=regression_model,
+			svr_kernel=svr_kernel,
+			svr_c=svr_c,
+			svr_epsilon=svr_epsilon,
+			svr_gamma=svr_gamma,
+			kmeans_regression_clusters=kmeans_regression_clusters,
+			kmeans_regression_n_init=kmeans_regression_n_init,
 			regressor_early_stopping_patience=classifier_early_stopping_patience,
 			autoencoder_early_stopping_patience=autoencoder_early_stopping_patience,
 			regressor_early_stopping_min_delta=classifier_early_stopping_min_delta,
@@ -2003,6 +2561,7 @@ def run_regression_experiment(
 		y_pred=filtered_y_pred,
 		output_dir=output_dir,
 		file_prefix=f"top_{feature_percent_tag}",
+		top_n=actual_predicted_top_n,
 	)
 	filtered_prediction_errors_path = save_regression_prediction_errors(
 		y_true=filtered_y_true,
@@ -2011,12 +2570,21 @@ def run_regression_experiment(
 		output_dir=output_dir,
 		file_prefix=f"top_{feature_percent_tag}",
 	)
+	filtered_train_prediction_errors_path = save_regression_prediction_errors(
+		y_true=filtered_train_y_true,
+		y_pred=filtered_train_y_pred,
+		sample_index=range(len(filtered_train_y_true)),
+		output_dir=output_dir,
+		file_prefix=f"top_{feature_percent_tag}_train",
+	)
 
 	elapsed_seconds = time.perf_counter() - start_time
 	org_metrics_data = {"task": "regression", **org_metrics}
 	org_metrics_data["elapsed_seconds"] = elapsed_seconds
 	if org_prediction_errors_path is not None:
 		org_metrics_data["prediction_errors_path"] = str(org_prediction_errors_path)
+	if org_train_prediction_errors_path is not None:
+		org_metrics_data["train_prediction_errors_path"] = str(org_train_prediction_errors_path)
 	filtered_metrics_data = {
 		"task": "regression",
 		"feature_percent": feature_percent,
@@ -2026,6 +2594,8 @@ def run_regression_experiment(
 	}
 	if filtered_prediction_errors_path is not None:
 		filtered_metrics_data["prediction_errors_path"] = str(filtered_prediction_errors_path)
+	if filtered_train_prediction_errors_path is not None:
+		filtered_metrics_data["train_prediction_errors_path"] = str(filtered_train_prediction_errors_path)
 	save_json(org_metrics_data, metrics_dir / "ORG_test_metrics.json")
 	save_json(filtered_metrics_data, metrics_dir / f"top_{feature_percent_tag}_test_metrics.json")
 
@@ -2167,6 +2737,13 @@ def main(
 	classifier_hidden_units: tuple[int, ...] = DEFAULT_CLASSIFIER_HIDDEN_UNITS,
 	classifier_dropout_rates: tuple[float, ...] | None = None,
 	classifier_learning_rate: float = 0.001,
+	regression_model: str = DEFAULT_REGRESSION_MODEL,
+	svr_kernel: str = DEFAULT_SVR_KERNEL,
+	svr_c: float = DEFAULT_SVR_C,
+	svr_epsilon: float = DEFAULT_SVR_EPSILON,
+	svr_gamma: str | float = DEFAULT_SVR_GAMMA,
+	kmeans_regression_clusters: int = DEFAULT_KMEANS_REGRESSION_CLUSTERS,
+	kmeans_regression_n_init: int = DEFAULT_KMEANS_REGRESSION_N_INIT,
 	device: str = "auto",
 	feature_chunk_size: int = DEFAULT_FEATURE_CHUNK_SIZE,
 	chunk_feature_threshold: int = DEFAULT_CHUNK_FEATURE_THRESHOLD,
@@ -2179,6 +2756,7 @@ def main(
 	cluster_min_k: int = DEFAULT_CLUSTER_MIN_K,
 	cluster_max_k: int = DEFAULT_CLUSTER_MAX_K,
 	save_training_plots: bool = False,
+	actual_predicted_top_n: int | None = None,
 ) -> tuple[float, float]:
 	task = task.lower().strip()
 	if task not in {"classification", "clustering", "regression"}:
@@ -2228,11 +2806,19 @@ def main(
 			classifier_hidden_units=classifier_hidden_units,
 			classifier_dropout_rates=classifier_dropout_rates,
 			classifier_learning_rate=classifier_learning_rate,
+			regression_model=regression_model,
+			svr_kernel=svr_kernel,
+			svr_c=svr_c,
+			svr_epsilon=svr_epsilon,
+			svr_gamma=svr_gamma,
+			kmeans_regression_clusters=kmeans_regression_clusters,
+			kmeans_regression_n_init=kmeans_regression_n_init,
 			classifier_early_stopping_patience=classifier_early_stopping_patience,
 			autoencoder_early_stopping_patience=autoencoder_early_stopping_patience,
 			classifier_early_stopping_min_delta=classifier_early_stopping_min_delta,
 			autoencoder_early_stopping_min_delta=autoencoder_early_stopping_min_delta,
 			save_training_plots=save_training_plots,
+			actual_predicted_top_n=actual_predicted_top_n,
 		)
 
 	if task == "classification" and is_probable_regression_target(df[target_column]):
@@ -2302,6 +2888,13 @@ def run_repeated_experiments(
 	classifier_hidden_units: tuple[int, ...],
 	classifier_dropout_rates: tuple[float, ...] | None,
 	classifier_learning_rate: float,
+	regression_model: str,
+	svr_kernel: str,
+	svr_c: float,
+	svr_epsilon: float,
+	svr_gamma: str | float,
+	kmeans_regression_clusters: int,
+	kmeans_regression_n_init: int,
 	device: str,
 	feature_chunk_size: int,
 	chunk_feature_threshold: int,
@@ -2314,6 +2907,7 @@ def run_repeated_experiments(
 	cluster_min_k: int,
 	cluster_max_k: int,
 	save_training_plots: bool,
+	actual_predicted_top_n: int | None,
 	repeat_runs: int,
 	accuracy_txt_path: Path,
 	metric_name: str = "Accuracy",
@@ -2345,6 +2939,13 @@ def run_repeated_experiments(
 			classifier_hidden_units=classifier_hidden_units,
 			classifier_dropout_rates=classifier_dropout_rates,
 			classifier_learning_rate=classifier_learning_rate,
+			regression_model=regression_model,
+			svr_kernel=svr_kernel,
+			svr_c=svr_c,
+			svr_epsilon=svr_epsilon,
+			svr_gamma=svr_gamma,
+			kmeans_regression_clusters=kmeans_regression_clusters,
+			kmeans_regression_n_init=kmeans_regression_n_init,
 			device=device,
 			feature_chunk_size=feature_chunk_size,
 			chunk_feature_threshold=chunk_feature_threshold,
@@ -2357,6 +2958,7 @@ def run_repeated_experiments(
 			cluster_min_k=cluster_min_k,
 			cluster_max_k=cluster_max_k,
 			save_training_plots=save_training_plots,
+			actual_predicted_top_n=actual_predicted_top_n,
 		)
 		run_elapsed_seconds = time.perf_counter() - run_start_time
 		run_durations.append(run_elapsed_seconds)
@@ -2383,7 +2985,12 @@ def run_repeated_experiments(
 						"regression_mae": regression_metrics.get("regression_mae"),
 						"regression_r2": regression_metrics.get("regression_r2"),
 						"pearson_r": regression_metrics.get("pearson_r"),
+						"correlation": regression_metrics.get("correlation", regression_metrics.get("pearson_r")),
 						"cosine_similarity": regression_metrics.get("cosine_similarity"),
+						"regression_model": regression_metrics.get("regression_model", regression_model),
+						"kmeans_regression_clusters": regression_metrics.get("kmeans_regression_clusters"),
+						"kmeans_regression_effective_clusters": regression_metrics.get("kmeans_regression_effective_clusters"),
+						"kmeans_regression_n_init": regression_metrics.get("kmeans_regression_n_init"),
 						"elapsed_seconds": run_elapsed_seconds,
 					}
 				)
@@ -2444,10 +3051,17 @@ def run_repeated_experiments(
 			for row in regression_run_rows
 			if row.get("regression_rmse") is not None
 		]
+		correlation_values = [
+			float(row["correlation"])
+			for row in regression_run_rows
+			if row.get("correlation") is not None and not pd.isna(row.get("correlation"))
+		]
 		mse_mean = float(np.mean(mse_values)) if mse_values else float("nan")
 		mse_std = float(np.std(mse_values, ddof=1)) if len(mse_values) > 1 else 0.0
 		rmse_mean = float(np.mean(rmse_values)) if rmse_values else float("nan")
 		rmse_std = float(np.std(rmse_values, ddof=1)) if len(rmse_values) > 1 else 0.0
+		correlation_mean = float(np.mean(correlation_values)) if correlation_values else float("nan")
+		correlation_std = float(np.std(correlation_values, ddof=1)) if len(correlation_values) > 1 else 0.0
 		regression_error_text = (
 			f"MSE listesi: {mse_values}\n"
 			f"Sirali MSE (dusuk iyi): {sorted(mse_values)}\n"
@@ -2457,6 +3071,10 @@ def run_repeated_experiments(
 			f"Sirali RMSE (dusuk iyi): {sorted(rmse_values)}\n"
 			f"Ortalama RMSE: {rmse_mean:.6f}\n"
 			f"Std RMSE: {rmse_std:.6f}\n"
+			f"Correlation listesi: {correlation_values}\n"
+			f"Sirali Correlation (yuksek iyi): {sorted(correlation_values, reverse=True)}\n"
+			f"Ortalama Correlation: {correlation_mean:.6f}\n"
+			f"Std Correlation: {correlation_std:.6f}\n"
 		)
 	output_text = (
 		f"{accuracy_values}\n"
@@ -2475,22 +3093,23 @@ def run_repeated_experiments(
 		boxplot_metric_name = "Cluster_RMSE"
 	elif task == "regression":
 		plot_output_dir = Path("outputs") / "autoencoder" / dataset_folder / "metrics"
-		boxplot_metric_name = "Pearson_r"
 	else:
 		plot_output_dir = Path("outputs") / "autoencoder" / dataset_folder / "metrics"
 		boxplot_metric_name = "Accuracy"
-	save_metric_boxplot(
-		metric_values=accuracy_values,
-		output_dir=plot_output_dir,
-		file_prefix=f"top_{feature_percent_tag}",
-		metric_name=boxplot_metric_name,
-	)
-	save_repeated_metric_distribution_plot(
-		metric_values=accuracy_values,
-		output_dir=plot_output_dir,
-		file_prefix=f"top_{feature_percent_tag}",
-		metric_name=boxplot_metric_name,
-	)
+	if task != "regression":
+		save_metric_boxplot(
+			metric_values=accuracy_values,
+			output_dir=plot_output_dir,
+			file_prefix=f"top_{feature_percent_tag}",
+			metric_name=boxplot_metric_name,
+			normalize_to_unit=boxplot_metric_name == "Cluster_RMSE",
+		)
+		save_repeated_metric_distribution_plot(
+			metric_values=accuracy_values,
+			output_dir=plot_output_dir,
+			file_prefix=f"top_{feature_percent_tag}",
+			metric_name=boxplot_metric_name,
+		)
 
 	if task == "regression" and regression_run_rows:
 		regression_runs_df = pd.DataFrame(regression_run_rows)
@@ -2498,11 +3117,32 @@ def run_repeated_experiments(
 		regression_runs_df.to_csv(regression_runs_path, index=False)
 
 		rmse_values = regression_runs_df["regression_rmse"].dropna().astype(float).to_numpy()
+		if len(rmse_values) > 0:
+			save_metric_boxplot(
+				metric_values=rmse_values.tolist(),
+				output_dir=plot_output_dir,
+				file_prefix=f"top_{feature_percent_tag}",
+				metric_name="RMSE",
+				normalize_to_unit=True,
+			)
+			save_repeated_metric_distribution_plot(
+				metric_values=rmse_values.tolist(),
+				output_dir=plot_output_dir,
+				file_prefix=f"top_{feature_percent_tag}",
+				metric_name="RMSE",
+			)
 		selected_feature_counts = regression_runs_df["selected_feature_count"].dropna().astype(int)
 		n_runs = int(len(rmse_values))
 		rmse_mean = float(np.mean(rmse_values)) if n_runs else float("nan")
 		rmse_std = float(np.std(rmse_values, ddof=1)) if n_runs > 1 else 0.0
 		rmse_ci_half_width = float(1.96 * rmse_std / np.sqrt(n_runs)) if n_runs > 1 else 0.0
+		correlation_values = regression_runs_df["correlation"].dropna().astype(float).to_numpy()
+		n_correlation_runs = int(len(correlation_values))
+		correlation_mean = float(np.mean(correlation_values)) if n_correlation_runs else float("nan")
+		correlation_std = float(np.std(correlation_values, ddof=1)) if n_correlation_runs > 1 else 0.0
+		correlation_ci_half_width = (
+			float(1.96 * correlation_std / np.sqrt(n_correlation_runs)) if n_correlation_runs > 1 else 0.0
+		)
 		table_summary = {
 			"DS": dataset_folder.replace("_data", "").upper(),
 			"AL": "FeatureRank",
@@ -2512,6 +3152,13 @@ def run_repeated_experiments(
 			"ER_STD": rmse_std,
 			"ER_CI_1": rmse_mean - rmse_ci_half_width,
 			"ER_CI_2": rmse_mean + rmse_ci_half_width,
+			"CORR": correlation_mean,
+			"CORR_STD": correlation_std,
+			"CORR_CI_1": correlation_mean - correlation_ci_half_width,
+			"CORR_CI_2": correlation_mean + correlation_ci_half_width,
+			"REGRESSION_MODEL": regression_model,
+			"KMEANS_REGRESSION_CLUSTERS": kmeans_regression_clusters if regression_model == "kmeans" else None,
+			"KMEANS_REGRESSION_N_INIT": kmeans_regression_n_init if regression_model == "kmeans" else None,
 			"repeat_runs": n_runs,
 			"feature_percent": feature_percent,
 			"runs_csv_path": str(regression_runs_path),
@@ -2556,6 +3203,13 @@ if __name__ == "__main__":
 	parser.add_argument("--classifier-hidden-units", type=str, default="32,16", help="Classifier gizli katman nöronlari. Ornek: 128,64")
 	parser.add_argument("--classifier-dropout-rates", type=str, default="", help="Classifier dropout oranlari. Ornek: 0.3,0.2")
 	parser.add_argument("--classifier-learning-rate", type=float, default=0.001, help="Classifier ogrenme orani")
+	parser.add_argument("--regression-model", type=str, default=DEFAULT_REGRESSION_MODEL, choices=["neural", "svr", "kmeans"], help="Regression tahmin modeli: neural, svr veya kmeans")
+	parser.add_argument("--svr-kernel", type=str, default=DEFAULT_SVR_KERNEL, choices=["linear", "poly", "rbf", "sigmoid"], help="SVR kernel tipi")
+	parser.add_argument("--svr-c", type=float, default=DEFAULT_SVR_C, help="SVR C regularization parametresi")
+	parser.add_argument("--svr-epsilon", type=float, default=DEFAULT_SVR_EPSILON, help="SVR epsilon parametresi")
+	parser.add_argument("--svr-gamma", type=str, default=DEFAULT_SVR_GAMMA, help="SVR gamma parametresi: scale, auto veya sayisal deger")
+	parser.add_argument("--kmeans-regression-clusters", type=int, default=DEFAULT_KMEANS_REGRESSION_CLUSTERS, help="KMeans regression icin cluster sayisi")
+	parser.add_argument("--kmeans-regression-n-init", type=int, default=DEFAULT_KMEANS_REGRESSION_N_INIT, help="KMeans regression icin n_init degeri")
 	parser.add_argument("--classifier-early-stopping-patience", type=int, default=DEFAULT_EARLY_STOPPING_PATIENCE, help="Classifier icin early stopping patience. 0 verirsen kapanir")
 	parser.add_argument("--autoencoder-early-stopping-patience", type=int, default=None, help="Autoencoder icin val_loss tabanli early stopping patience. 0 verirsen kapanir. Regression modunda verilmezse otomatik classifier patience kullanilir")
 	parser.add_argument("--classifier-early-stopping-monitor", type=str, default=DEFAULT_CLASSIFIER_EARLY_STOPPING_MONITOR, choices=["val_loss", "val_accuracy"], help="Classifier early stopping metriği")
@@ -2569,10 +3223,12 @@ if __name__ == "__main__":
 	parser.add_argument("--cluster-min-k", type=int, default=DEFAULT_CLUSTER_MIN_K, help="Clustering icin denenecek minimum k")
 	parser.add_argument("--cluster-max-k", type=int, default=DEFAULT_CLUSTER_MAX_K, help="Clustering icin denenecek maksimum k")
 	parser.add_argument("--save-training-plots", action="store_true", help="Classification egitim history CSV ve PNG grafiklerini kaydeder")
+	parser.add_argument("--actual-predicted-top-n", type=int, default=None, help="Regression actual-vs-predicted grafiginde en yuksek actual degerli N ornegi gosterir. Bos birakilirsa tum test ornekleri siralanir")
 
 
 	args = parser.parse_args()
 	random_state = parse_random_state(args.random_state)
+	svr_gamma = parse_svr_gamma(args.svr_gamma)
 	classifier_hidden_units = parse_hidden_units(args.classifier_hidden_units)
 	classifier_dropout_rates = parse_dropout_rates(args.classifier_dropout_rates, len(classifier_hidden_units))
 	if args.autoencoder_early_stopping_patience is None:
@@ -2623,6 +3279,13 @@ if __name__ == "__main__":
 		classifier_hidden_units=classifier_hidden_units,
 		classifier_dropout_rates=classifier_dropout_rates,
 		classifier_learning_rate=args.classifier_learning_rate,
+		regression_model=args.regression_model,
+		svr_kernel=args.svr_kernel,
+		svr_c=args.svr_c,
+		svr_epsilon=args.svr_epsilon,
+		svr_gamma=svr_gamma,
+		kmeans_regression_clusters=args.kmeans_regression_clusters,
+		kmeans_regression_n_init=args.kmeans_regression_n_init,
 		device=args.device,
 		feature_chunk_size=args.feature_chunk_size,
 		chunk_feature_threshold=args.chunk_feature_threshold,
@@ -2635,6 +3298,7 @@ if __name__ == "__main__":
 		cluster_min_k=cluster_min_k,
 		cluster_max_k=cluster_max_k,
 		save_training_plots=args.save_training_plots,
+		actual_predicted_top_n=args.actual_predicted_top_n,
 		repeat_runs=args.repeat_runs,
 		accuracy_txt_path=accuracy_txt_path,
 		metric_name=metric_name,
