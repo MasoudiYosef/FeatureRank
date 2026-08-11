@@ -4,6 +4,7 @@ import argparse
 import random
 import json
 import time
+import re
 from pathlib import Path
 
 os.environ.setdefault("MPLCONFIGDIR", str((Path.cwd() / ".matplotlib_cache").resolve()))
@@ -16,6 +17,8 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib.colors import BoundaryNorm, ListedColormap
+from matplotlib.ticker import FormatStrFormatter
 from sklearn.cluster import KMeans
 from sklearn.metrics import (
 	accuracy_score,
@@ -36,7 +39,9 @@ from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
 from sklearn.metrics.pairwise import cosine_similarity
-from sklearn.svm import SVR
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.linear_model import LogisticRegression
+from sklearn.svm import SVC, SVR
 
 # Proje kokunu import path'ine ekle
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -44,7 +49,15 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from src.config import RANDOM_STATE
 from src.data_loader import convert_txt_dataset_to_csv, load_data
 from src.models import build_sigmoid_autoencoder, build_latent_classifier, build_latent_regressor
-from src.preprocessing import preprocess_data, scale_data
+from src.preprocessing import (
+	drop_id_column,
+	encode_target,
+	handle_pid_unrealistic_zeros,
+	keep_numeric_features_only,
+	preprocess_data,
+	scale_data,
+	split_features_target,
+)
 from src.autoencoder_feature_selection import (
 	save_top_percent_features_by_abs_max_weight,
 	save_filtered_dataset_from_selected_features,
@@ -61,12 +74,13 @@ DEFAULT_CLASSIFIER_HIDDEN_UNITS = (32, 16)
 DEFAULT_FEATURE_CHUNK_SIZE = 10000
 DEFAULT_CHUNK_FEATURE_THRESHOLD = 50000
 DEFAULT_CLUSTER_MIN_K = 2
-DEFAULT_CLUSTER_MAX_K = 15
+DEFAULT_CLUSTER_MAX_K = 16
 DEFAULT_EARLY_STOPPING_PATIENCE = 0
 DEFAULT_AUTOENCODER_EARLY_STOPPING_PATIENCE = 0
 DEFAULT_EARLY_STOPPING_MIN_DELTA = 0.0
 DEFAULT_AUTOENCODER_EARLY_STOPPING_MIN_DELTA = 0.001
 DEFAULT_CLASSIFIER_EARLY_STOPPING_MONITOR = "val_accuracy"
+DEFAULT_CLASSIFIER_MODEL = "neural"
 DEFAULT_REGRESSION_MODEL = "neural"
 DEFAULT_SVR_KERNEL = "rbf"
 DEFAULT_SVR_C = 1.0
@@ -74,9 +88,67 @@ DEFAULT_SVR_EPSILON = 0.1
 DEFAULT_SVR_GAMMA = "scale"
 DEFAULT_KMEANS_REGRESSION_CLUSTERS = 5
 DEFAULT_KMEANS_REGRESSION_N_INIT = 10
+DEFAULT_DIMENSION_REDUCTION_MIN_HIDDEN_DIM = 128
+DEFAULT_DIMENSION_REDUCTION_MAX_HIDDEN_DIM = 2048
+PCA_CLUSTER_CMAP = ListedColormap(
+	[
+		"#0072B2",  # blue
+		"#009E73",  # green
+		"#FED000",  # yellow
+		"#E41A1C",  # red
+		"#8A8A8A",  # gray
+		"#A6761D",  # brown
+		"#F781BF",  # pink
+	],
+	name="feature_rank_cluster",
+)
+
+
+def compute_dimension_reduction_hidden_dim(input_dim: int, encoding_dim: int) -> int:
+	if input_dim <= 0:
+		raise ValueError("Dimension reduction input_dim pozitif olmali.")
+	if encoding_dim <= 0:
+		raise ValueError("Dimension reduction encoding_dim pozitif olmali.")
+
+	# Buyuk veri setlerinde input_dim kadar genis gizli katman kurmak
+	# bellek ve sure maliyetini gereksiz sekilde patlatıyor. Reduction
+	# akisi icin gizli katmani simetrik tutuyoruz ama makul bir ust sinir
+	# ile daraltiyoruz.
+	candidate_hidden_dim = max(
+		int(encoding_dim * 4),
+		int(np.sqrt(float(input_dim) * float(encoding_dim))),
+		DEFAULT_DIMENSION_REDUCTION_MIN_HIDDEN_DIM,
+	)
+	return min(input_dim, candidate_hidden_dim, DEFAULT_DIMENSION_REDUCTION_MAX_HIDDEN_DIM)
+
+
+def build_dimension_reduction_autoencoder(input_dim: int, encoding_dim: int, activation: str = "relu"):
+	if encoding_dim <= 0:
+		raise ValueError("Dimension reduction encoding_dim pozitif olmali.")
+	hidden_dim = compute_dimension_reduction_hidden_dim(input_dim, encoding_dim)
+	input_layer = tf.keras.layers.Input(shape=(input_dim,), dtype="float32", name="input_layer")
+	encoder_hidden = tf.keras.layers.Dense(hidden_dim, activation=activation, name="encoder_hidden")(input_layer)
+	latent = tf.keras.layers.Dense(encoding_dim, activation="linear", name="latent")(encoder_hidden)
+	decoded_input = tf.keras.layers.Dense(hidden_dim, activation=activation, name="decoder_hidden")(latent)
+	decoded = tf.keras.layers.Dense(input_dim, activation="linear", name="reconstruction")(decoded_input)
+	autoencoder = tf.keras.Model(inputs=input_layer, outputs=decoded, name="dimension_reduction_autoencoder")
+	encoder = tf.keras.Model(inputs=input_layer, outputs=latent, name="dimension_reduction_encoder")
+	autoencoder.compile(
+		optimizer=tf.keras.optimizers.Adam(learning_rate=0.0001, clipnorm=1.0),
+		loss="mse",
+		jit_compile=False,
+	)
+	return autoencoder, encoder
+
+
+def build_cluster_colormap(cluster_count: int) -> ListedColormap:
+	if cluster_count <= PCA_CLUSTER_CMAP.N:
+		return ListedColormap(PCA_CLUSTER_CMAP.colors[:cluster_count], name="feature_rank_cluster_dynamic")
+	return ListedColormap(plt.get_cmap("tab20", cluster_count)(np.arange(cluster_count)), name="feature_rank_cluster_dynamic")
 
 
 def set_reproducible(seed: int | None) -> None:
+	tf.keras.backend.clear_session()
 	if seed is None:
 		return
 	random.seed(seed)
@@ -165,6 +237,82 @@ def format_feature_percent_tag(feature_percent: float) -> str:
 	return str(feature_percent).replace(".", "_")
 
 
+def is_encoded_dataset_folder(dataset_folder: str) -> bool:
+	folder_name = str(dataset_folder).lower()
+	return "_encoded_dim_" in folder_name or "_encoded_" in folder_name or "_dimension_reduction_" in folder_name
+
+
+def get_encoded_source_feature_percent(dataset_folder: str) -> float | None:
+	match = re.search(r"_top_(\d+(?:_\d+)?)_encoded_dim_", str(dataset_folder).lower())
+	if not match:
+		return None
+	return float(match.group(1).replace("_", "."))
+
+
+def format_encoded_output_percent(feature_percent: float, dataset_folder: str) -> float:
+	# Encoded dataset adindaki top_X, latent CSV'nin hangi orijinal feature yuzdesinden
+	# uretildigini anlatir. Deney ciktilari ise komutta verilen aktif yuzdeyi kullanmalidir.
+	return feature_percent
+
+
+def format_metric_output_prefix(feature_percent: float, dataset_folder: str) -> str:
+	if is_encoded_dataset_folder(dataset_folder):
+		feature_percent = format_encoded_output_percent(feature_percent, dataset_folder)
+		feature_percent_tag = format_feature_percent_tag(feature_percent)
+		return f"top_{feature_percent_tag}_encoder"
+	feature_percent_tag = format_feature_percent_tag(feature_percent)
+	return f"top_{feature_percent_tag}"
+
+
+def format_test_metrics_filename(feature_percent: float, dataset_folder: str) -> str:
+	if is_encoded_dataset_folder(dataset_folder):
+		feature_percent = format_encoded_output_percent(feature_percent, dataset_folder)
+		feature_percent_tag = format_feature_percent_tag(feature_percent)
+		return f"top_{feature_percent_tag}_test_encoder_metrics.json"
+	feature_percent_tag = format_feature_percent_tag(feature_percent)
+	return f"top_{feature_percent_tag}_test_metrics.json"
+
+
+def format_feature_output_label(feature_percent: float, dataset_folder: str) -> str:
+	output_feature_percent = format_encoded_output_percent(feature_percent, dataset_folder)
+	output_feature_percent_tag = format_feature_percent_tag(output_feature_percent).replace("_", ".")
+	if is_encoded_dataset_folder(dataset_folder):
+		return f"Top %{output_feature_percent_tag} encoder"
+	return f"Top %{output_feature_percent_tag}"
+
+
+def add_encoded_metric_metadata(metrics_data: dict, feature_percent: float, dataset_folder: str) -> None:
+	if not is_encoded_dataset_folder(dataset_folder):
+		return
+	source_percent = get_encoded_source_feature_percent(dataset_folder)
+	metrics_data["encoded_dataset"] = True
+	if source_percent is not None:
+		metrics_data["encoded_source_feature_percent"] = source_percent
+	metrics_data["encoded_active_feature_percent"] = feature_percent
+
+
+def format_encoded_dataset_stem(dataset_folder: str, feature_percent: float, encoding_dim: int) -> str:
+	feature_percent_tag = format_feature_percent_tag(feature_percent)
+	return f"{dataset_folder}_dimension_reduction_{feature_percent_tag}_data"
+
+
+def parse_feature_percent_values(feature_percent_text: str | float | int) -> list[float]:
+	text = str(feature_percent_text).strip().lower()
+	if text in {"all", "grid", "range"}:
+		return [float(value) for value in range(10, 101, 10)]
+
+	parts = [part.strip() for part in text.split(",") if part.strip()]
+	if not parts:
+		raise ValueError("feature-percent bos olamaz. Ornek: 20, 10,20,30 veya all")
+
+	values: list[float] = []
+	for part in parts:
+		value = validate_feature_percent(float(part))
+		if value not in values:
+			values.append(value)
+	return values
+
+
 def parse_hidden_units(units_text: str) -> tuple[int, ...]:
 	parts = [p.strip() for p in units_text.split(",") if p.strip()]
 	if not parts:
@@ -204,6 +352,105 @@ def parse_svr_gamma(gamma_text: str) -> str | float:
 	if text in {"scale", "auto"}:
 		return text
 	return float(gamma_text)
+
+
+def compute_binary_class_weight(y_train: np.ndarray, mode: str = "none") -> dict[int, float] | None:
+	mode = str(mode).strip().lower()
+	if mode in {"none", "", "off", "false"}:
+		return None
+	if mode != "balanced":
+		raise ValueError("classifier-class-weight 'none' veya 'balanced' olmali.")
+
+	classes, counts = np.unique(y_train.astype(int), return_counts=True)
+	if not set(classes).issubset({0, 1}) or len(classes) < 2:
+		print("[WARN] class_weight balanced atlandi: y_train icinde iki binary sinif yok.")
+		return None
+
+	total = float(np.sum(counts))
+	class_count = float(len(classes))
+	class_weight = {
+		int(class_label): total / (class_count * float(count))
+		for class_label, count in zip(classes, counts)
+	}
+	print(f"[INFO] Class weight kullaniliyor: {class_weight}")
+	return class_weight
+
+
+def undersample_binary_training_data(
+	X_train: np.ndarray,
+	y_train: np.ndarray,
+	random_state: int | None,
+	mode: str = "none",
+) -> tuple[np.ndarray, np.ndarray]:
+	mode = str(mode).strip().lower()
+	if mode in {"none", "", "off", "false"}:
+		return X_train, y_train
+	if mode != "undersample":
+		raise ValueError("classifier-sampling 'none' veya 'undersample' olmali.")
+
+	y_train_int = y_train.astype(int)
+	classes, counts = np.unique(y_train_int, return_counts=True)
+	if not set(classes).issubset({0, 1}) or len(classes) < 2:
+		print("[WARN] undersample atlandi: y_train icinde iki binary sinif yok.")
+		return X_train, y_train
+
+	target_count = int(np.min(counts))
+	rng = np.random.default_rng(random_state)
+	selected_indices: list[np.ndarray] = []
+	before_counts = {int(class_label): int(count) for class_label, count in zip(classes, counts)}
+	for class_label in classes:
+		class_indices = np.where(y_train_int == int(class_label))[0]
+		if len(class_indices) > target_count:
+			class_indices = rng.choice(class_indices, size=target_count, replace=False)
+		selected_indices.append(class_indices)
+
+	balanced_indices = np.concatenate(selected_indices)
+	rng.shuffle(balanced_indices)
+	balanced_y = y_train[balanced_indices]
+	after_classes, after_counts = np.unique(balanced_y.astype(int), return_counts=True)
+	after_counts_dict = {int(class_label): int(count) for class_label, count in zip(after_classes, after_counts)}
+	print(f"[INFO] Undersampling uygulandi. Once: {before_counts}, sonra: {after_counts_dict}")
+	return X_train[balanced_indices], balanced_y
+
+
+def build_sklearn_classifier(
+	classifier_model: str,
+	random_state: int | None,
+	class_weight: dict[int, float] | None,
+):
+	classifier_model = str(classifier_model).strip().lower()
+	if classifier_model == "logistic":
+		return LogisticRegression(
+			max_iter=5000,
+			random_state=random_state,
+			class_weight=class_weight,
+		)
+	if classifier_model == "svm":
+		return SVC(
+			kernel="rbf",
+			probability=True,
+			random_state=random_state,
+			class_weight=class_weight,
+		)
+	if classifier_model == "random_forest":
+		return RandomForestClassifier(
+			n_estimators=300,
+			random_state=random_state,
+			class_weight=class_weight,
+			n_jobs=-1,
+		)
+	raise ValueError("classifier-model 'neural', 'logistic', 'svm' veya 'random_forest' olmali.")
+
+
+def predict_binary_scores(classifier, X_test_encoded: np.ndarray) -> np.ndarray:
+	if hasattr(classifier, "predict_proba"):
+		y_score = classifier.predict_proba(X_test_encoded)[:, 1]
+	elif hasattr(classifier, "decision_function"):
+		decision_scores = classifier.decision_function(X_test_encoded)
+		y_score = 1.0 / (1.0 + np.exp(-decision_scores))
+	else:
+		y_score = classifier.predict(X_test_encoded)
+	return np.asarray(y_score, dtype=np.float32).ravel()
 
 
 def save_training_history(
@@ -703,6 +950,74 @@ def compute_binary_classification_metrics(
 	return metrics
 
 
+def rename_classification_metric_prefix(metrics: dict, prefix: str) -> dict:
+	renamed = {}
+	for key, value in metrics.items():
+		if key.startswith("test_"):
+			renamed[f"{prefix}_{key.removeprefix('test_')}"] = value
+		else:
+			renamed[f"{prefix}_{key}"] = value
+	return renamed
+
+
+def compute_multiclass_one_vs_rest_metric_summary(
+	dataset_folder: str,
+	class_labels: list,
+	metric_filename: str,
+) -> dict:
+	metric_rows: list[dict] = []
+	for class_label in class_labels:
+		binary_dataset_folder = f"{class_label}_{dataset_folder}"
+		metrics_path = (
+			Path("outputs")
+			/ "autoencoder"
+			/ dataset_folder
+			/ binary_dataset_folder
+			/ "metrics"
+			/ metric_filename
+		)
+		if not metrics_path.exists():
+			raise FileNotFoundError(f"Metric dosyasi bulunamadi: {metrics_path}")
+
+		with open(metrics_path, "r", encoding="utf-8") as f:
+			metrics = json.load(f)
+
+		class_counts = metrics.get("class_counts", {})
+		class_count = class_counts.get(str(class_label), class_counts.get(class_label, 1))
+		row = {
+			"class_label": class_label,
+			"accuracy": float(metrics["test_accuracy"]),
+			"precision": float(metrics["test_precision"]) if metrics.get("test_precision") is not None else None,
+			"recall": float(metrics["test_recall"]) if metrics.get("test_recall") is not None else None,
+			"f1": float(metrics["test_f1"]) if metrics.get("test_f1") is not None else None,
+			"class_count": int(class_count) if class_count is not None else 1,
+			"metrics_path": str(metrics_path),
+		}
+
+		predictions_path = metrics.get("classification_predictions_path")
+		if predictions_path:
+			row["classification_predictions_path"] = predictions_path
+
+		metric_rows.append(row)
+
+	def weighted_average(metric_name: str) -> float | None:
+		valid_rows = [row for row in metric_rows if row.get(metric_name) is not None]
+		if not valid_rows:
+			return None
+		total_weight = sum(row["class_count"] for row in valid_rows)
+		if total_weight == 0:
+			return None
+		return float(sum(row[metric_name] * row["class_count"] for row in valid_rows) / total_weight)
+
+	return {
+		"test_accuracy": weighted_average("accuracy"),
+		"test_precision": weighted_average("precision"),
+		"test_recall": weighted_average("recall"),
+		"test_f1": weighted_average("f1"),
+		"class_metric_rows": metric_rows,
+	}
+
+
 def save_classification_precision_recall_plot(
 	y_true: np.ndarray,
 	y_score: np.ndarray,
@@ -820,13 +1135,12 @@ def collect_repeated_multiclass_run_history(
 	feature_percent: float,
 	run_idx: int,
 ) -> pd.DataFrame | None:
-	feature_percent_tag = format_feature_percent_tag(feature_percent)
 	metrics_path = (
 		Path("outputs")
 		/ "autoencoder"
 		/ dataset_folder
 		/ "metrics"
-		/ f"top_{feature_percent_tag}_test_metrics.json"
+		/ format_test_metrics_filename(feature_percent, dataset_folder)
 	)
 	if not metrics_path.exists():
 		print(f"[WARN] Multiclass metrics dosyasi bulunamadi: {metrics_path}")
@@ -919,15 +1233,19 @@ def train_autoencoder_model(
 	X_val: np.ndarray,
 	X_eval: np.ndarray,
 	encoding_dim: int,
+	autoencoder_epochs: int = AUTOENCODER_EPOCHS,
 	early_stopping_patience: int | None = None,
 	early_stopping_min_delta: float = DEFAULT_AUTOENCODER_EARLY_STOPPING_MIN_DELTA,
 	history_output_dir: Path | None = None,
 	history_prefix: str | None = None,
+	shuffle_training: bool = True,
+	autoencoder_builder=build_sigmoid_autoencoder,
+	autoencoder_activation: str = "sigmoid",
 ) -> tuple[float, tf.keras.Model, tf.keras.Model]:
-	autoencoder, encoder = build_sigmoid_autoencoder(
+	autoencoder, encoder = autoencoder_builder(
 		input_dim=X_train_sub.shape[1],
 		encoding_dim=encoding_dim,
-		activation="sigmoid",
+		activation=autoencoder_activation,
 	)
 	
 	# Ensure consistent dtypes
@@ -951,9 +1269,9 @@ def train_autoencoder_model(
 		X_train_sub,
 		X_train_sub,
 		validation_data=(X_val, X_val),
-		epochs=AUTOENCODER_EPOCHS,
+		epochs=autoencoder_epochs,
 		batch_size=BATCH_SIZE,
-		shuffle=True,
+		shuffle=shuffle_training,
 		callbacks=callbacks,
 		verbose=1,
 	)
@@ -970,6 +1288,259 @@ def train_autoencoder_model(
 	return eval_mse, autoencoder, encoder
 
 
+def train_encoder_from_raw_features(
+	X_train_raw: pd.DataFrame,
+	X_test_raw: pd.DataFrame,
+	encoding_dim: int,
+	random_state: int | None,
+	autoencoder_early_stopping_patience: int | None,
+	autoencoder_early_stopping_min_delta: float,
+	y_train: np.ndarray | None = None,
+	autoencoder_epochs: int = AUTOENCODER_EPOCHS,
+	history_output_dir: Path | None = None,
+	history_prefix: str | None = None,
+	autoencoder_builder=build_sigmoid_autoencoder,
+	autoencoder_activation: str = "sigmoid",
+) -> tuple[float, tf.keras.Model, tf.keras.Model, StandardScaler, np.ndarray]:
+	X_train, X_test, scaler = scale_data(X_train_raw, X_test_raw)
+	X_train = X_train.astype(np.float32)
+	X_test = X_test.astype(np.float32)
+	if y_train is not None:
+		X_train_sub, X_val, _, _ = train_test_split(
+			X_train,
+			y_train,
+			test_size=CLASSIFIER_VALIDATION_SPLIT,
+			random_state=random_state,
+			shuffle=True,
+			stratify=y_train,
+		)
+	else:
+		X_train_sub, X_val = train_test_split(
+			X_train,
+			test_size=CLASSIFIER_VALIDATION_SPLIT,
+			random_state=random_state,
+			shuffle=True,
+		)
+	eval_mse, autoencoder, encoder = train_autoencoder_model(
+		X_train_sub=X_train_sub,
+		X_val=X_val,
+		X_eval=X_test,
+		encoding_dim=encoding_dim,
+		autoencoder_epochs=autoencoder_epochs,
+		early_stopping_patience=autoencoder_early_stopping_patience,
+		early_stopping_min_delta=autoencoder_early_stopping_min_delta,
+		history_output_dir=history_output_dir,
+		history_prefix=history_prefix,
+		shuffle_training=random_state is None,
+		autoencoder_builder=autoencoder_builder,
+		autoencoder_activation=autoencoder_activation,
+	)
+	return eval_mse, autoencoder, encoder, scaler, X_train_sub
+
+
+def train_feature_ranking_autoencoder_for_selection(
+	X_train: np.ndarray,
+	X_test: np.ndarray,
+	y_train: np.ndarray,
+	encoding_dim: int,
+	random_state: int | None,
+	autoencoder_early_stopping_patience: int | None,
+	autoencoder_early_stopping_min_delta: float,
+	history_output_dir: Path | None = None,
+	history_prefix: str | None = None,
+) -> tuple[float, tf.keras.Model, np.ndarray]:
+	"""
+	FeatureRank icin autoencoder sadece feature importance/weight uretmek amaciyla egitilir.
+	Final classifier dogrudan secilen feature'lar uzerinde calisir.
+	"""
+	X_train_sub, X_val, y_train_sub, _ = train_test_split(
+		X_train,
+		y_train,
+		test_size=CLASSIFIER_VALIDATION_SPLIT,
+		random_state=random_state,
+		shuffle=True,
+		stratify=y_train,
+	)
+	eval_mse, autoencoder, _ = train_autoencoder_model(
+		X_train_sub=X_train_sub.astype(np.float32),
+		X_val=X_val.astype(np.float32),
+		X_eval=X_test.astype(np.float32),
+		encoding_dim=encoding_dim,
+		early_stopping_patience=autoencoder_early_stopping_patience,
+		early_stopping_min_delta=autoencoder_early_stopping_min_delta,
+		history_output_dir=history_output_dir,
+		history_prefix=history_prefix,
+		shuffle_training=random_state is None,
+	)
+	return eval_mse, autoencoder, X_train_sub
+
+
+def save_encoded_dataset_from_encoder(
+	encoder: tf.keras.Model,
+	scaler: StandardScaler,
+	X_all_raw: pd.DataFrame,
+	y_all: pd.Series,
+	target_column: str,
+	output_path: Path,
+	labeled_output_path: Path | None = None,
+) -> Path:
+	ensure_dir(output_path.parent)
+	if not output_path.name.endswith("_data.csv"):
+		raise ValueError(f"Encoded data dosyasi '_data.csv' ile bitmeli. Gelen: {output_path.name}")
+	if hasattr(scaler, "feature_names_in_"):
+		expected_features = list(scaler.feature_names_in_)
+		missing_features = [feature for feature in expected_features if feature not in X_all_raw.columns]
+		if missing_features:
+			raise ValueError(f"Encoded dataset icin eksik feature var: {missing_features}")
+		X_all_raw = X_all_raw[expected_features]
+	X_all_scaled = scaler.transform(X_all_raw).astype(np.float32)
+	X_all_encoded = encoder.predict(X_all_scaled, verbose=0).astype(np.float32)
+	encoded_columns = [f"encoded_{idx + 1}" for idx in range(X_all_encoded.shape[1])]
+	encoded_df = pd.DataFrame(X_all_encoded, columns=encoded_columns)
+	encoded_df.to_csv(output_path, index=False, header=False)
+	label_path = output_path.with_name(output_path.name.replace("_data.csv", "_label.csv"))
+	pd.Series(y_all).reset_index(drop=True).to_frame().to_csv(label_path, index=False, header=False)
+	print(f"[OK] Encoded label CSV kaydedildi: {label_path}")
+	if labeled_output_path is not None:
+		ensure_dir(labeled_output_path.parent)
+		labeled_df = encoded_df.copy()
+		labeled_df[target_column] = pd.Series(y_all).reset_index(drop=True)
+		labeled_df.to_csv(labeled_output_path, index=False)
+		print(f"[OK] Label eklenmis encoded CSV kaydedildi: {labeled_output_path}")
+	return output_path
+
+
+def save_dimension_reduced_classification_dataset(
+	df: pd.DataFrame,
+	dataset_folder: str,
+	target_column: str,
+	id_column: str | None,
+	feature_percent: float,
+	random_state: int | None,
+	autoencoder_early_stopping_patience: int | None,
+	autoencoder_early_stopping_min_delta: float,
+	save_training_plots: bool = False,
+) -> Path:
+	feature_percent = validate_feature_percent(feature_percent)
+	processed = preprocess_data(
+		df,
+		target_column=target_column,
+		id_column=id_column,
+		random_state=random_state,
+		scale_features=False,
+	)
+	X_train_raw = processed["X_train"]
+	X_test_raw = processed["X_test"]
+	feature_names = X_train_raw.columns.tolist()
+	original_feature_count = len(feature_names)
+	if original_feature_count <= 0:
+		raise ValueError("Dimension reduction icin en az bir feature olmali.")
+
+	feature_percent_tag = format_feature_percent_tag(feature_percent)
+	reduction_ratio = feature_percent / 100.0
+	latent_dimension = max(1, int(original_feature_count * reduction_ratio))
+	hidden_dimension = compute_dimension_reduction_hidden_dim(original_feature_count, latent_dimension)
+	dimension_reduction_epochs = AUTOENCODER_EPOCHS
+	dimension_reduction_hidden_activation = "relu"
+
+	output_dir = Path("outputs") / "autoencoder" / dataset_folder
+	encoded_output_dir = output_dir / "dimension_reduction"
+	history_dir = output_dir / "training_history"
+	ensure_dir(output_dir)
+	ensure_dir(encoded_output_dir)
+	if save_training_plots:
+		ensure_dir(history_dir)
+
+	print(f"\n[INFO] Dataset: {dataset_folder}")
+	print(f"[INFO] Original Feature Count: {original_feature_count}")
+	print(f"[INFO] Reduction Ratio: {feature_percent:g}%")
+	print(f"[INFO] Encoder Output Dimension: {latent_dimension}")
+	print(f"[INFO] Symmetric Hidden Dimension: {hidden_dimension}")
+	print(f"[INFO] Dimension Reduction Epochs: {dimension_reduction_epochs}")
+	print("[INFO] Training Autoencoder...")
+
+	reconstruction_mse, _, encoder, scaler, _ = train_encoder_from_raw_features(
+		X_train_raw=X_train_raw,
+		X_test_raw=X_test_raw,
+		encoding_dim=latent_dimension,
+		random_state=random_state,
+		y_train=processed["y_train"].to_numpy().astype(np.int32),
+		autoencoder_early_stopping_patience=autoencoder_early_stopping_patience,
+		autoencoder_early_stopping_min_delta=autoencoder_early_stopping_min_delta,
+		autoencoder_epochs=dimension_reduction_epochs,
+		history_output_dir=history_dir if save_training_plots else None,
+		history_prefix=f"dimension_reduction_{feature_percent_tag}" if save_training_plots else None,
+		autoencoder_builder=build_dimension_reduction_autoencoder,
+		autoencoder_activation=dimension_reduction_hidden_activation,
+	)
+	reconstruction_rmse = float(np.sqrt(reconstruction_mse))
+
+	prepared_df = drop_id_column(df.copy(), id_column=id_column)
+	prepared_df = encode_target(prepared_df, target_column=target_column)
+	X_all_raw, y_all = split_features_target(prepared_df, target_column=target_column)
+	X_all_raw = handle_pid_unrealistic_zeros(X_all_raw)
+	X_all_raw = keep_numeric_features_only(X_all_raw)
+	X_all_raw = X_all_raw[feature_names]
+
+	encoded_filename = f"{format_encoded_dataset_stem(dataset_folder, feature_percent, latent_dimension)}.csv"
+	raw_encoded_path = Path("data") / "raw" / encoded_filename
+	output_encoded_path = encoded_output_dir / encoded_filename
+	labeled_output_path = encoded_output_dir / encoded_filename.replace("_data.csv", "_with_label.csv")
+	save_encoded_dataset_from_encoder(
+		encoder=encoder,
+		scaler=scaler,
+		X_all_raw=X_all_raw,
+		y_all=y_all,
+		target_column=target_column,
+		output_path=raw_encoded_path,
+	)
+	save_encoded_dataset_from_encoder(
+		encoder=encoder,
+		scaler=scaler,
+		X_all_raw=X_all_raw,
+		y_all=y_all,
+		target_column=target_column,
+		output_path=output_encoded_path,
+		labeled_output_path=labeled_output_path,
+	)
+	metadata_path = encoded_output_dir / f"{Path(encoded_filename).stem}_metadata.json"
+	save_json(
+		{
+			"dataset": dataset_folder,
+			"task": "dimension_reduction",
+			"reduction_percent": feature_percent,
+			"reduction_ratio": reduction_ratio,
+			"original_feature_count": original_feature_count,
+			"latent_dimension": latent_dimension,
+			"symmetric_hidden_dimension": hidden_dimension,
+			"hidden_activation": dimension_reduction_hidden_activation,
+			"latent_activation": "linear",
+			"decoder_output_activation": "linear",
+			"optimizer": "Adam",
+			"optimizer_learning_rate": 0.0001,
+			"optimizer_clipnorm": 1.0,
+			"autoencoder_epochs": dimension_reduction_epochs,
+			"encoded_dataset_shape": [int(len(X_all_raw)), int(latent_dimension)],
+			"autoencoder_architecture": "input_to_encoder_hidden_to_latent_to_decoder_hidden_to_linear_reconstruction",
+			"feature_ranking_used": False,
+			"dimension_reduction_mse": reconstruction_mse,
+			"dimension_reduction_rmse": reconstruction_rmse,
+			"autoencoder_reconstruction_mse": reconstruction_mse,
+			"autoencoder_reconstruction_rmse": reconstruction_rmse,
+			"raw_encoded_dataset_path": str(raw_encoded_path),
+			"raw_label_path": str(raw_encoded_path.with_name(raw_encoded_path.name.replace("_data.csv", "_label.csv"))),
+			"output_encoded_dataset_path": str(output_encoded_path),
+			"output_labeled_dataset_path": str(labeled_output_path),
+		},
+		metadata_path,
+	)
+	print(f"[INFO] Encoded Dataset Shape: ({len(X_all_raw)}, {latent_dimension})")
+	print(f"[OK] Dimension reduction CSV kaydedildi: {raw_encoded_path}")
+	print(f"[OK] Dimension reduction kopyasi: {output_encoded_path}")
+	print(f"[OK] Dimension reduction metadata: {metadata_path}")
+	return raw_encoded_path
+
+
 def train_and_evaluate_pipeline(
 	X_train: np.ndarray,
 	X_test: np.ndarray,
@@ -981,13 +1552,17 @@ def train_and_evaluate_pipeline(
 	classifier_hidden_units: tuple[int, ...],
 	classifier_dropout_rates: tuple[float, ...] | None,
 	classifier_learning_rate: float,
+	classifier_model: str = DEFAULT_CLASSIFIER_MODEL,
 	classifier_early_stopping_patience: int | None = None,
 	autoencoder_early_stopping_patience: int | None = None,
 	classifier_early_stopping_monitor: str = DEFAULT_CLASSIFIER_EARLY_STOPPING_MONITOR,
 	classifier_early_stopping_min_delta: float = DEFAULT_EARLY_STOPPING_MIN_DELTA,
 	autoencoder_early_stopping_min_delta: float = DEFAULT_AUTOENCODER_EARLY_STOPPING_MIN_DELTA,
+	classifier_class_weight: str = "none",
+	classifier_sampling: str = "none",
 	history_output_dir: Path | None = None,
 	history_prefix: str | None = None,
+	return_train_predictions: bool = False,
 ) -> tuple[float, float, tf.keras.Model, tf.keras.Model, np.ndarray, np.ndarray, np.ndarray]:
 	X_train_sub, X_val, y_train_sub, y_val = train_test_split(
 		X_train,
@@ -996,6 +1571,12 @@ def train_and_evaluate_pipeline(
 		random_state=random_state,
 		shuffle=True,
 		stratify=y_train,
+	)
+	X_train_sub, y_train_sub = undersample_binary_training_data(
+		X_train=X_train_sub,
+		y_train=y_train_sub,
+		random_state=random_state,
+		mode=classifier_sampling,
 	)
 
 	test_mse, autoencoder, encoder = train_autoencoder_model(
@@ -1007,6 +1588,7 @@ def train_and_evaluate_pipeline(
 		early_stopping_min_delta=autoencoder_early_stopping_min_delta,
 		history_output_dir=history_output_dir,
 		history_prefix=history_prefix,
+		shuffle_training=random_state is None,
 	)
 
 	X_train_encoded = encoder.predict(X_train_sub, verbose=0).astype(np.float32)
@@ -1015,59 +1597,74 @@ def train_and_evaluate_pipeline(
 
 	# Get encoded dimension for validation
 	encoder_output_dim = X_train_encoded.shape[1]
-	
-	classifier = build_latent_classifier(
-		input_dim=encoder_output_dim,
-		hidden_units=classifier_hidden_units,
-		dropout_rates=classifier_dropout_rates,
-		learning_rate=classifier_learning_rate,
-	)
-	y_train_fit = y_train_sub.astype(np.float32)
-	y_val_fit = y_val.astype(np.float32)
-	
+
 	# Verify input/output shapes match model expectations
 	if X_train_encoded.shape[1] != encoder_output_dim:
 		raise ValueError(
 			f"Encoder output dim {X_train_encoded.shape[1]} != expected dim {encoder_output_dim}"
 		)
 
-	callbacks: list[tf.keras.callbacks.Callback] = []
-	if classifier_early_stopping_patience is not None and classifier_early_stopping_patience > 0:
-		if classifier_early_stopping_monitor not in {"val_loss", "val_accuracy"}:
-			raise ValueError("classifier early stopping monitor 'val_loss' veya 'val_accuracy' olmali.")
-		monitor_mode = "max" if classifier_early_stopping_monitor == "val_accuracy" else "min"
-		callbacks.append(
-			tf.keras.callbacks.EarlyStopping(
-				monitor=classifier_early_stopping_monitor,
-				patience=classifier_early_stopping_patience,
-				min_delta=classifier_early_stopping_min_delta,
-				restore_best_weights=True,
-				mode=monitor_mode,
-				verbose=1,
-			)
+	classifier_model = str(classifier_model).strip().lower()
+	class_weight = compute_binary_class_weight(y_train_sub, classifier_class_weight)
+	if classifier_model == "neural":
+		classifier = build_latent_classifier(
+			input_dim=encoder_output_dim,
+			hidden_units=classifier_hidden_units,
+			dropout_rates=classifier_dropout_rates,
+			learning_rate=classifier_learning_rate,
 		)
-	
-	classifier_history = classifier.fit(
-		X_train_encoded,
-		y_train_fit,
-		epochs=classifier_epochs,
-		batch_size=BATCH_SIZE,
-		validation_data=(X_val_encoded, y_val_fit),
-		callbacks=callbacks,
-		verbose=1,
-	)
-	if history_output_dir is not None and history_prefix is not None:
-		save_training_history(
-			history=classifier_history,
-			output_dir=history_output_dir,
-			file_prefix=f"{history_prefix}_classifier",
-			plot_metrics=("accuracy", "loss"),
-		)
+		y_train_fit = y_train_sub.astype(np.float32)
+		y_val_fit = y_val.astype(np.float32)
 
-	y_pred_prob = classifier.predict(X_test_encoded, verbose=0)
+		callbacks: list[tf.keras.callbacks.Callback] = []
+		if classifier_early_stopping_patience is not None and classifier_early_stopping_patience > 0:
+			if classifier_early_stopping_monitor not in {"val_loss", "val_accuracy"}:
+				raise ValueError("classifier early stopping monitor 'val_loss' veya 'val_accuracy' olmali.")
+			monitor_mode = "max" if classifier_early_stopping_monitor == "val_accuracy" else "min"
+			callbacks.append(
+				tf.keras.callbacks.EarlyStopping(
+					monitor=classifier_early_stopping_monitor,
+					patience=classifier_early_stopping_patience,
+					min_delta=classifier_early_stopping_min_delta,
+					restore_best_weights=True,
+					mode=monitor_mode,
+					verbose=1,
+				)
+			)
+
+		classifier_history = classifier.fit(
+			X_train_encoded,
+			y_train_fit,
+			epochs=classifier_epochs,
+			batch_size=BATCH_SIZE,
+			validation_data=(X_val_encoded, y_val_fit),
+			class_weight=class_weight,
+			shuffle=random_state is None,
+			callbacks=callbacks,
+			verbose=1,
+		)
+		if history_output_dir is not None and history_prefix is not None:
+			save_training_history(
+				history=classifier_history,
+				output_dir=history_output_dir,
+				file_prefix=f"{history_prefix}_classifier",
+				plot_metrics=("accuracy", "loss"),
+			)
+		y_pred_prob = classifier.predict(X_test_encoded, verbose=0)
+		if y_pred_prob.ndim == 2 and y_pred_prob.shape[1] == 1:
+			y_pred_prob = y_pred_prob.ravel()
+		print("classifier output shape:", classifier.output_shape)
+	else:
+		classifier = build_sklearn_classifier(
+			classifier_model=classifier_model,
+			random_state=random_state,
+			class_weight=class_weight,
+		)
+		classifier.fit(X_train_encoded, y_train_sub.astype(int))
+		y_pred_prob = predict_binary_scores(classifier, X_test_encoded)
+		print(f"classifier model: {classifier_model}")
+
 	# Handle both single-output (sigmoid) and multi-output predictions
-	if y_pred_prob.ndim == 2 and y_pred_prob.shape[1] == 1:
-		y_pred_prob = y_pred_prob.ravel()
 	y_pred = (y_pred_prob > THRESHOLD).astype(int).ravel()
 	
 	if len(y_pred) != len(y_test):
@@ -1076,8 +1673,477 @@ def train_and_evaluate_pipeline(
 		)
 		
 	test_accuracy = float(accuracy_score(y_test.astype(int), y_pred))
-	print("classifier output shape:", classifier.output_shape)
+	if return_train_predictions:
+		X_train_eval_encoded = encoder.predict(X_train.astype(np.float32), verbose=0).astype(np.float32)
+		if classifier_model == "neural":
+			y_train_score = classifier.predict(X_train_eval_encoded, verbose=0)
+			if y_train_score.ndim == 2 and y_train_score.shape[1] == 1:
+				y_train_score = y_train_score.ravel()
+		else:
+			y_train_score = predict_binary_scores(classifier, X_train_eval_encoded)
+		y_train_pred = (np.asarray(y_train_score).ravel() > THRESHOLD).astype(int)
+		return (
+			test_mse,
+			test_accuracy,
+			autoencoder,
+			encoder,
+			X_train_sub,
+			y_pred,
+			y_pred_prob.ravel(),
+			y_train_pred.ravel(),
+			np.asarray(y_train_score, dtype=np.float32).ravel(),
+		)
 	return test_mse, test_accuracy, autoencoder, encoder, X_train_sub, y_pred, y_pred_prob.ravel()
+
+
+def train_and_evaluate_direct_classifier(
+	X_train: np.ndarray,
+	X_test: np.ndarray,
+	y_train: np.ndarray,
+	y_test: np.ndarray,
+	random_state: int | None,
+	classifier_epochs: int,
+	classifier_hidden_units: tuple[int, ...],
+	classifier_dropout_rates: tuple[float, ...] | None,
+	classifier_learning_rate: float,
+	classifier_model: str = DEFAULT_CLASSIFIER_MODEL,
+	classifier_early_stopping_patience: int | None = None,
+	classifier_early_stopping_monitor: str = DEFAULT_CLASSIFIER_EARLY_STOPPING_MONITOR,
+	classifier_early_stopping_min_delta: float = DEFAULT_EARLY_STOPPING_MIN_DELTA,
+	classifier_class_weight: str = "none",
+	classifier_sampling: str = "none",
+	history_output_dir: Path | None = None,
+	history_prefix: str | None = None,
+) -> tuple[float, np.ndarray, np.ndarray]:
+	X_train_sub, X_val, y_train_sub, y_val = train_test_split(
+		X_train,
+		y_train,
+		test_size=CLASSIFIER_VALIDATION_SPLIT,
+		random_state=random_state,
+		shuffle=True,
+		stratify=y_train,
+	)
+	X_train_sub, y_train_sub = undersample_binary_training_data(
+		X_train=X_train_sub,
+		y_train=y_train_sub,
+		random_state=random_state,
+		mode=classifier_sampling,
+	)
+
+	classifier_model = str(classifier_model).strip().lower()
+	class_weight = compute_binary_class_weight(y_train_sub, classifier_class_weight)
+	if classifier_model == "neural":
+		classifier = build_latent_classifier(
+			input_dim=X_train.shape[1],
+			hidden_units=classifier_hidden_units,
+			dropout_rates=classifier_dropout_rates,
+			learning_rate=classifier_learning_rate,
+		)
+		callbacks: list[tf.keras.callbacks.Callback] = []
+		if classifier_early_stopping_patience is not None and classifier_early_stopping_patience > 0:
+			if classifier_early_stopping_monitor not in {"val_loss", "val_accuracy"}:
+				raise ValueError("classifier early stopping monitor 'val_loss' veya 'val_accuracy' olmali.")
+			monitor_mode = "max" if classifier_early_stopping_monitor == "val_accuracy" else "min"
+			callbacks.append(
+				tf.keras.callbacks.EarlyStopping(
+					monitor=classifier_early_stopping_monitor,
+					patience=classifier_early_stopping_patience,
+					min_delta=classifier_early_stopping_min_delta,
+					restore_best_weights=True,
+					mode=monitor_mode,
+					verbose=1,
+				)
+			)
+		classifier_history = classifier.fit(
+			X_train_sub.astype(np.float32),
+			y_train_sub.astype(np.float32),
+			epochs=classifier_epochs,
+			batch_size=BATCH_SIZE,
+			validation_data=(X_val.astype(np.float32), y_val.astype(np.float32)),
+			class_weight=class_weight,
+			shuffle=random_state is None,
+			callbacks=callbacks,
+			verbose=1,
+		)
+		if history_output_dir is not None and history_prefix is not None:
+			save_training_history(
+				history=classifier_history,
+				output_dir=history_output_dir,
+				file_prefix=f"{history_prefix}_direct_classifier",
+				plot_metrics=("accuracy", "loss"),
+			)
+		y_score = classifier.predict(X_test.astype(np.float32), verbose=0)
+		if y_score.ndim == 2 and y_score.shape[1] == 1:
+			y_score = y_score.ravel()
+		print("direct classifier output shape:", classifier.output_shape)
+	else:
+		classifier = build_sklearn_classifier(
+			classifier_model=classifier_model,
+			random_state=random_state,
+			class_weight=class_weight,
+		)
+		classifier.fit(X_train_sub, y_train_sub.astype(int))
+		y_score = predict_binary_scores(classifier, X_test)
+		print(f"direct classifier model: {classifier_model}")
+
+	y_score = np.asarray(y_score, dtype=np.float32).ravel()
+	y_pred = (y_score > THRESHOLD).astype(int)
+	if len(y_pred) != len(y_test):
+		raise ValueError(f"Prediction length {len(y_pred)} != y_test length {len(y_test)}")
+	test_accuracy = float(accuracy_score(y_test.astype(int), y_pred))
+	return test_accuracy, y_pred, y_score
+
+
+def train_and_evaluate_direct_multiclass_classifier(
+	X_train: np.ndarray,
+	X_test: np.ndarray,
+	y_train: np.ndarray,
+	y_test: np.ndarray,
+	random_state: int | None,
+	classifier_epochs: int,
+	classifier_hidden_units: tuple[int, ...],
+	classifier_dropout_rates: tuple[float, ...] | None,
+	classifier_learning_rate: float,
+	classifier_model: str = DEFAULT_CLASSIFIER_MODEL,
+	classifier_early_stopping_patience: int | None = None,
+	classifier_early_stopping_monitor: str = DEFAULT_CLASSIFIER_EARLY_STOPPING_MONITOR,
+	classifier_early_stopping_min_delta: float = DEFAULT_EARLY_STOPPING_MIN_DELTA,
+	history_output_dir: Path | None = None,
+	history_prefix: str | None = None,
+) -> tuple[float, np.ndarray, np.ndarray]:
+	X_train_sub, X_val, y_train_sub, y_val = train_test_split(
+		X_train,
+		y_train,
+		test_size=CLASSIFIER_VALIDATION_SPLIT,
+		random_state=random_state,
+		shuffle=True,
+		stratify=y_train,
+	)
+	num_classes = int(len(np.unique(y_train)))
+	classifier_model = str(classifier_model).strip().lower()
+	if classifier_model == "neural":
+		classifier = build_latent_classifier(
+			input_dim=X_train.shape[1],
+			num_classes=num_classes,
+			hidden_units=classifier_hidden_units,
+			dropout_rates=classifier_dropout_rates,
+			learning_rate=classifier_learning_rate,
+		)
+		callbacks: list[tf.keras.callbacks.Callback] = []
+		if classifier_early_stopping_patience is not None and classifier_early_stopping_patience > 0:
+			monitor_mode = "max" if classifier_early_stopping_monitor == "val_accuracy" else "min"
+			callbacks.append(
+				tf.keras.callbacks.EarlyStopping(
+					monitor=classifier_early_stopping_monitor,
+					patience=classifier_early_stopping_patience,
+					min_delta=classifier_early_stopping_min_delta,
+					restore_best_weights=True,
+					mode=monitor_mode,
+					verbose=1,
+				)
+			)
+		history = classifier.fit(
+			X_train_sub.astype(np.float32),
+			y_train_sub.astype(np.int32),
+			epochs=classifier_epochs,
+			batch_size=BATCH_SIZE,
+			validation_data=(X_val.astype(np.float32), y_val.astype(np.int32)),
+			shuffle=random_state is None,
+			callbacks=callbacks,
+			verbose=1,
+		)
+		if history_output_dir is not None and history_prefix is not None:
+			save_training_history(
+				history=history,
+				output_dir=history_output_dir,
+				file_prefix=f"{history_prefix}_direct_classifier",
+				plot_metrics=("accuracy", "loss"),
+			)
+		y_score = np.asarray(classifier.predict(X_test.astype(np.float32), verbose=0), dtype=np.float32)
+		y_pred = np.argmax(y_score, axis=1).astype(int)
+	else:
+		classifier = build_sklearn_classifier(
+			classifier_model=classifier_model,
+			random_state=random_state,
+			class_weight=None,
+		)
+		classifier.fit(X_train_sub, y_train_sub.astype(int))
+		y_pred = np.asarray(classifier.predict(X_test), dtype=int).ravel()
+		if hasattr(classifier, "predict_proba"):
+			y_score = np.asarray(classifier.predict_proba(X_test), dtype=np.float32)
+		else:
+			y_score = np.empty((len(y_pred), 0), dtype=np.float32)
+
+	return float(accuracy_score(y_test.astype(int), y_pred)), y_pred, y_score
+
+
+def run_dimension_reduction_classification_experiment(
+	df: pd.DataFrame,
+	dataset_folder: str,
+	target_column: str,
+	id_column: str | None,
+	encoding_dim: int,
+	feature_percent: float,
+	random_state: int | None,
+	classifier_epochs: int,
+	classifier_hidden_units: tuple[int, ...],
+	classifier_dropout_rates: tuple[float, ...] | None,
+	classifier_learning_rate: float,
+	classifier_model: str,
+	classifier_early_stopping_patience: int | None,
+	autoencoder_early_stopping_patience: int | None,
+	classifier_early_stopping_monitor: str,
+	classifier_early_stopping_min_delta: float,
+	autoencoder_early_stopping_min_delta: float,
+	classifier_class_weight: str,
+	classifier_sampling: str,
+	save_training_plots: bool,
+	current_class_label: int | None = None,
+	class_counts: dict[int, int] | None = None,
+) -> tuple[float, float]:
+	"""Evaluate latent features without exposing the outer test split to model fitting."""
+	start_time = time.perf_counter()
+	feature_percent = validate_feature_percent(feature_percent)
+	processed = preprocess_data(
+		df,
+		target_column=target_column,
+		id_column=id_column,
+		random_state=random_state,
+		scale_features=False,
+	)
+	X_train_raw = processed["X_train"]
+	X_test_raw = processed["X_test"]
+	y_train = processed["y_train"].to_numpy().astype(np.int32)
+	y_test = processed["y_test"].to_numpy().astype(np.int32)
+	original_feature_count = int(X_train_raw.shape[1])
+	latent_dimension = max(1, int(original_feature_count * feature_percent / 100.0))
+	feature_percent_tag = format_feature_percent_tag(feature_percent)
+	file_prefix = f"top_{feature_percent_tag}_dimension_reduction"
+
+	output_dir = Path("outputs") / "autoencoder" / dataset_folder
+	metrics_dir = output_dir / "metrics"
+	history_dir = output_dir / "training_history"
+	ensure_dir(output_dir)
+	ensure_dir(metrics_dir)
+	if save_training_plots:
+		ensure_dir(history_dir)
+
+	print("[INFO] Leakage-free dimension reduction classification basladi.")
+	print(f"[INFO] Outer train/test: {len(X_train_raw)}/{len(X_test_raw)}")
+	print(f"[INFO] Original/latent feature: {original_feature_count}/{latent_dimension}")
+	print(f"[INFO] Autoencoder epoch (tum yuzdelerde sabit): {AUTOENCODER_EPOCHS}")
+
+	reconstruction_mse, _, encoder, scaler, _ = train_encoder_from_raw_features(
+		X_train_raw=X_train_raw,
+		X_test_raw=X_test_raw,
+		encoding_dim=latent_dimension,
+		random_state=random_state,
+		y_train=y_train,
+		autoencoder_early_stopping_patience=autoencoder_early_stopping_patience,
+		autoencoder_early_stopping_min_delta=autoencoder_early_stopping_min_delta,
+		autoencoder_epochs=AUTOENCODER_EPOCHS,
+		history_output_dir=history_dir if save_training_plots else None,
+		history_prefix=file_prefix if save_training_plots else None,
+		autoencoder_builder=build_dimension_reduction_autoencoder,
+		autoencoder_activation="relu",
+	)
+	X_train_scaled = scaler.transform(X_train_raw).astype(np.float32)
+	X_test_scaled = scaler.transform(X_test_raw).astype(np.float32)
+	X_train_encoded = encoder.predict(X_train_scaled, verbose=0).astype(np.float32)
+	X_test_encoded = encoder.predict(X_test_scaled, verbose=0).astype(np.float32)
+	encoded_scaler = StandardScaler()
+	X_train_encoded = encoded_scaler.fit_transform(X_train_encoded).astype(np.float32)
+	X_test_encoded = encoded_scaler.transform(X_test_encoded).astype(np.float32)
+
+	class_count = int(len(np.unique(y_train)))
+	if class_count != 2:
+		raise ValueError(
+			"run_dimension_reduction_classification_experiment binary etiket bekliyor. "
+			"Multiclass icin one-vs-rest akis kullanilmali."
+		)
+	(
+		_classifier_test_mse,
+		test_accuracy,
+		_classifier_autoencoder,
+		_classifier_encoder,
+		_classifier_train_sub,
+		y_pred,
+		y_score,
+	) = train_and_evaluate_pipeline(
+		X_train=X_train_encoded,
+		X_test=X_test_encoded,
+		y_train=y_train,
+		y_test=y_test,
+		encoding_dim=encoding_dim,
+		random_state=random_state,
+		classifier_epochs=classifier_epochs,
+		classifier_hidden_units=classifier_hidden_units,
+		classifier_dropout_rates=classifier_dropout_rates,
+		classifier_learning_rate=classifier_learning_rate,
+		classifier_model=classifier_model,
+		classifier_early_stopping_patience=classifier_early_stopping_patience,
+		autoencoder_early_stopping_patience=autoencoder_early_stopping_patience,
+		classifier_early_stopping_monitor=classifier_early_stopping_monitor,
+		classifier_early_stopping_min_delta=classifier_early_stopping_min_delta,
+		autoencoder_early_stopping_min_delta=autoencoder_early_stopping_min_delta,
+		classifier_class_weight=classifier_class_weight,
+		classifier_sampling=classifier_sampling,
+		history_output_dir=history_dir if save_training_plots else None,
+		history_prefix=file_prefix if save_training_plots else None,
+	)
+	metrics_data = compute_binary_classification_metrics(y_test, y_pred, y_score)
+
+	predictions_path = output_dir / f"{file_prefix}_classification_predictions.csv"
+	pd.DataFrame({"y_true": y_test, "y_pred": y_pred}).to_csv(predictions_path, index=False)
+	metrics_data.update(
+		{
+			"task": "classification",
+			"method": "DimensionReduction",
+			"feature_percent": feature_percent,
+			"original_feature_count": original_feature_count,
+			"selected_feature_count": latent_dimension,
+			"latent_feature_count": latent_dimension,
+			"class_count": class_count,
+			"split_seed": random_state,
+			"outer_train_count": int(len(X_train_raw)),
+			"outer_test_count": int(len(X_test_raw)),
+			"scaler_fit_scope": "outer_train_only",
+			"encoded_scaler_fit_scope": "encoded_outer_train_only",
+			"autoencoder_fit_scope": "outer_train_only",
+			"classifier_fit_scope": "encoded_outer_train_only",
+			"test_seen_during_fit": False,
+			"autoencoder_epochs": AUTOENCODER_EPOCHS,
+			"dimension_reduction_mse": reconstruction_mse,
+			"dimension_reduction_rmse": float(np.sqrt(reconstruction_mse)),
+			"autoencoder_reconstruction_mse": reconstruction_mse,
+			"autoencoder_reconstruction_rmse": float(np.sqrt(reconstruction_mse)),
+			"classifier_model": classifier_model,
+			"elapsed_seconds": time.perf_counter() - start_time,
+			"classification_predictions_path": str(predictions_path),
+		}
+	)
+	if current_class_label is not None and class_counts is not None:
+		metrics_data["current_class_label"] = current_class_label
+		metrics_data["class_counts"] = class_counts
+		metrics_data["binary_label_counts"] = {
+			"label_0": int(np.sum(y_test == 0)),
+			"label_1": int(np.sum(y_test == 1)),
+		}
+	metrics_path = metrics_dir / f"{file_prefix}_test_metrics.json"
+	save_json(metrics_data, metrics_path)
+	print(f"[OK] Leakage-free dimension reduction test_accuracy: {test_accuracy:.6f}")
+	print(f"[OK] Dimension reduction metrik dosyasi: {metrics_path}")
+	return reconstruction_mse, test_accuracy
+
+
+def run_dimension_reduction_multiclass_one_vs_rest(
+	df: pd.DataFrame,
+	dataset_folder: str,
+	target_column: str,
+	id_column: str | None,
+	encoding_dim: int,
+	feature_percent: float,
+	random_state: int | None,
+	classifier_epochs: int,
+	classifier_hidden_units: tuple[int, ...],
+	classifier_dropout_rates: tuple[float, ...] | None,
+	classifier_learning_rate: float,
+	classifier_model: str,
+	classifier_early_stopping_patience: int | None,
+	autoencoder_early_stopping_patience: int | None,
+	classifier_early_stopping_monitor: str,
+	classifier_early_stopping_min_delta: float,
+	autoencoder_early_stopping_min_delta: float,
+	classifier_class_weight: str,
+	classifier_sampling: str,
+	save_training_plots: bool,
+) -> tuple[float, float]:
+	class_labels = sorted(df[target_column].dropna().unique().tolist())
+	if len(class_labels) <= 2:
+		raise ValueError("run_dimension_reduction_multiclass_one_vs_rest sadece 2'den fazla sinif icin kullanilmali.")
+
+	print(f"[INFO] Dimension Reduction multi-class tespit edildi. Siniflar: {class_labels}")
+	class_counts = {label: int((df[target_column] == label).sum()) for label in class_labels}
+	print(f"[INFO] Dataset class sayilari: {class_counts}")
+
+	for class_label in class_labels:
+		binary_df = df.copy()
+		binary_df[target_column] = (binary_df[target_column] != class_label).astype(np.int32)
+		binary_dataset_folder = f"{class_label}_{dataset_folder}"
+		nested_binary_folder = str(Path(dataset_folder) / binary_dataset_folder)
+
+		print(f"\n[INFO] Dimension Reduction one-vs-rest basliyor: class={class_label}, klasor={binary_dataset_folder}")
+		run_dimension_reduction_classification_experiment(
+			df=binary_df,
+			dataset_folder=nested_binary_folder,
+			target_column=target_column,
+			id_column=id_column,
+			encoding_dim=encoding_dim,
+			feature_percent=feature_percent,
+			random_state=random_state,
+			classifier_epochs=classifier_epochs,
+			classifier_hidden_units=classifier_hidden_units,
+			classifier_dropout_rates=classifier_dropout_rates,
+			classifier_learning_rate=classifier_learning_rate,
+			classifier_model=classifier_model,
+			classifier_early_stopping_patience=classifier_early_stopping_patience,
+			autoencoder_early_stopping_patience=autoencoder_early_stopping_patience,
+			classifier_early_stopping_monitor=classifier_early_stopping_monitor,
+			classifier_early_stopping_min_delta=classifier_early_stopping_min_delta,
+			autoencoder_early_stopping_min_delta=autoencoder_early_stopping_min_delta,
+			classifier_class_weight=classifier_class_weight,
+			classifier_sampling=classifier_sampling,
+			save_training_plots=save_training_plots,
+			current_class_label=class_label,
+			class_counts=class_counts,
+		)
+
+	output_feature_percent = format_encoded_output_percent(feature_percent, dataset_folder)
+	output_feature_percent_tag = format_feature_percent_tag(output_feature_percent)
+	output_feature_label = format_feature_output_label(feature_percent, dataset_folder)
+	filtered_metric_filename = f"top_{output_feature_percent_tag}_dimension_reduction_test_metrics.json"
+	filtered_summary_metrics = compute_multiclass_one_vs_rest_metric_summary(
+		dataset_folder=dataset_folder,
+		class_labels=class_labels,
+		metric_filename=filtered_metric_filename,
+	)
+	macro_filtered_accuracy = float(filtered_summary_metrics["test_accuracy"])
+
+	output_dir = Path("outputs") / "autoencoder" / dataset_folder
+	metrics_dir = output_dir / "metrics"
+	ensure_dir(output_dir)
+	ensure_dir(metrics_dir)
+
+	filtered_class_metric_rows = filtered_summary_metrics.pop("class_metric_rows", [])
+	filtered_class_metrics_path = metrics_dir / f"top_{output_feature_percent_tag}_dimension_reduction_multiclass_class_metrics.csv"
+	if filtered_class_metric_rows:
+		pd.DataFrame(filtered_class_metric_rows).to_csv(filtered_class_metrics_path, index=False)
+
+	filtered_multiclass_metrics_data = {
+		"task": "classification",
+		"method": "DimensionReduction",
+		"feature_percent": output_feature_percent,
+		"num_classes": len(class_labels),
+		"class_labels": class_labels,
+		"macro_average": True,
+		"class_metrics_path": str(filtered_class_metrics_path) if filtered_class_metric_rows else None,
+		**filtered_summary_metrics,
+	}
+	add_encoded_metric_metadata(filtered_multiclass_metrics_data, feature_percent, dataset_folder)
+	save_json(filtered_multiclass_metrics_data, metrics_dir / filtered_metric_filename)
+
+	print("\n[OK] Dimension Reduction multi-class one-vs-rest tamamlandi.")
+	print(f"[OK] {output_feature_label} macro test_accuracy: {macro_filtered_accuracy:.6f}")
+	if filtered_summary_metrics.get("test_precision") is not None:
+		print(f"[OK] {output_feature_label} macro test_precision: {float(filtered_summary_metrics['test_precision']):.6f}")
+	if filtered_summary_metrics.get("test_recall") is not None:
+		print(f"[OK] {output_feature_label} macro test_recall: {float(filtered_summary_metrics['test_recall']):.6f}")
+	if filtered_summary_metrics.get("test_f1") is not None:
+		print(f"[OK] {output_feature_label} macro test_f1: {float(filtered_summary_metrics['test_f1']):.6f}")
+	print(f"[OK] Metrik dosyasi: {metrics_dir / filtered_metric_filename}")
+	if filtered_class_metric_rows:
+		print(f"[OK] Sinif bazli multiclass metrik CSV: {filtered_class_metrics_path}")
+	return macro_filtered_accuracy, macro_filtered_accuracy
 
 
 def train_and_evaluate_regression_pipeline(
@@ -1198,6 +2264,7 @@ def train_and_evaluate_regression_pipeline(
 			epochs=regressor_epochs,
 			batch_size=BATCH_SIZE,
 			validation_data=(X_val_encoded, y_val_scaled),
+			shuffle=random_state is None,
 			callbacks=callbacks,
 			verbose=1,
 		)
@@ -1286,11 +2353,14 @@ def evaluate_kmeans_range(
 	min_k: int,
 	max_k: int,
 	random_state: int | None,
+	selected_k: int | None = None,
 ) -> tuple[pd.DataFrame, dict, np.ndarray]:
 	min_k, max_k = normalize_cluster_k_range(min_k, max_k, X_cluster.shape[0])
 	rows: list[dict] = []
 	best_labels: np.ndarray | None = None
 	best_row: dict | None = None
+	selected_labels: np.ndarray | None = None
+	selected_row: dict | None = None
 
 	for k in range(min_k, max_k + 1):
 		model = KMeans(n_clusters=k, random_state=random_state, n_init=10)
@@ -1308,9 +2378,19 @@ def evaluate_kmeans_range(
 			"silhouette_score": silhouette,
 		}
 		rows.append(row)
+		if selected_k is not None and k == selected_k:
+			selected_row = row
+			selected_labels = labels
 		if not np.isnan(silhouette) and (best_row is None or silhouette > best_row["silhouette_score"]):
 			best_row = row
 			best_labels = labels
+
+	if selected_k is not None:
+		if selected_row is None or selected_labels is None:
+			raise ValueError(f"Sabit cluster k={selected_k}, k araliginda bulunamadi: {min_k}-{max_k}")
+		if np.isnan(selected_row["silhouette_score"]):
+			raise ValueError(f"Sabit cluster k={selected_k} icin gecerli silhouette skoru hesaplanamadi.")
+		return pd.DataFrame(rows), selected_row, selected_labels
 
 	if best_row is None or best_labels is None:
 		raise ValueError("Gecerli silhouette skoru hesaplanamadi. k araligini veya veri boyutunu kontrol edin.")
@@ -1318,18 +2398,28 @@ def evaluate_kmeans_range(
 	return pd.DataFrame(rows), best_row, best_labels
 
 
-def save_cluster_evaluation_plots(scores_df: pd.DataFrame, output_dir: Path, file_prefix: str) -> None:
+def save_cluster_evaluation_plots(
+	scores_df: pd.DataFrame,
+	output_dir: Path,
+	file_prefix: str,
+	selected_k: int | None = None,
+) -> None:
 	if scores_df.empty or "k" not in scores_df.columns:
 		return
 
 	ensure_dir(output_dir)
+	min_k_for_axis = int(scores_df["k"].min())
+	max_k_for_axis = max(16, int(scores_df["k"].max()))
+	k_ticks = np.arange(min_k_for_axis, max_k_for_axis + 1, 1)
 	silhouette_df = pd.DataFrame()
 	if "inertia" in scores_df.columns:
 		plt.figure(figsize=(8, 5))
 		plt.plot(scores_df["k"], scores_df["inertia"], marker="o")
-		plt.xlabel("Number of clusters (k)")
-		plt.ylabel("Within-cluster sum of squares (Inertia)")
-		plt.title(f"{file_prefix} elbow method")
+		plt.xlabel("Number of clusters (k)", fontsize=15)
+		plt.ylabel("Within-cluster sum of squares (Inertia)", fontsize=15)
+		plt.xlim(min_k_for_axis - 0.5, max_k_for_axis + 0.5)
+		plt.xticks(k_ticks)
+		plt.tick_params(axis="both", labelsize=13)
 		plt.grid(True, alpha=0.3)
 		plt.tight_layout()
 		elbow_path = output_dir / f"{file_prefix}_elbow.png"
@@ -1342,9 +2432,11 @@ def save_cluster_evaluation_plots(scores_df: pd.DataFrame, output_dir: Path, fil
 		if not silhouette_df.empty:
 			plt.figure(figsize=(8, 5))
 			plt.plot(silhouette_df["k"], silhouette_df["silhouette_score"], marker="o")
-			plt.xlabel("Number of clusters (k)")
-			plt.ylabel("Silhouette score")
-			plt.title(f"{file_prefix} silhouette score")
+			plt.xlabel("Number of clusters (k)", fontsize=15)
+			plt.ylabel("Silhouette score", fontsize=30)
+			plt.xlim(min_k_for_axis - 0.5, max_k_for_axis + 0.5)
+			plt.xticks(k_ticks)
+			plt.tick_params(axis="both", labelsize=13)
 			plt.grid(True, alpha=0.3)
 			plt.tight_layout()
 			silhouette_path = output_dir / f"{file_prefix}_silhouette.png"
@@ -1353,46 +2445,64 @@ def save_cluster_evaluation_plots(scores_df: pd.DataFrame, output_dir: Path, fil
 			print(f"[OK] Silhouette plot: {silhouette_path}")
 
 	if "inertia" in scores_df.columns and not silhouette_df.empty:
-		best_idx = silhouette_df["silhouette_score"].idxmax()
-		best_k = int(silhouette_df.loc[best_idx, "k"])
-		best_silhouette = float(silhouette_df.loc[best_idx, "silhouette_score"])
-
 		fig, ax_inertia = plt.subplots(figsize=(9, 5))
-		inertia_line = ax_inertia.plot(
+		ax_inertia.plot(
 			scores_df["k"],
-			scores_df["inertia"],
+			scores_df["inertia"] / 10000.0,
 			color="#1f77b4",
 			marker="o",
-			label="Inertia (Elbow)",
+			linewidth=2.4,
+			markersize=7,
 		)
-		ax_inertia.set_xlabel("Number of clusters (k)")
-		ax_inertia.set_ylabel("Inertia / WCSS", color="#1f77b4")
+		ax_inertia.set_xlabel("Number of clusters (k)", fontsize=20)
+		ax_inertia.set_ylabel("WCSS", color="#1f77b4", fontsize=35)
+		ax_inertia.set_xlim(min_k_for_axis - 0.5, max_k_for_axis + 0.5)
+		ax_inertia.set_xticks(k_ticks)
 		ax_inertia.tick_params(axis="y", labelcolor="#1f77b4")
+		ax_inertia.tick_params(axis="both", labelsize=15)
 		ax_inertia.grid(True, alpha=0.3)
+		ax_inertia.text(
+			0.0,
+			1.02,
+			r"$\times 10^4$",
+			transform=ax_inertia.transAxes,
+			ha="left",
+			va="bottom",
+			fontsize=15,
+			color="#1f77b4",
+		)
 
 		ax_silhouette = ax_inertia.twinx()
-		silhouette_line = ax_silhouette.plot(
+		ax_silhouette.plot(
 			silhouette_df["k"],
-			silhouette_df["silhouette_score"],
+			silhouette_df["silhouette_score"] * 100.0,
 			color="#ff7f0e",
 			marker="s",
-			label="Silhouette score",
+			linewidth=2.4,
+			markersize=7,
 		)
-		ax_silhouette.scatter([best_k], [best_silhouette], color="red", zorder=3, label=f"Best k={best_k}")
-		ax_silhouette.set_ylabel("Silhouette score", color="#ff7f0e")
+		ax_silhouette.set_ylabel("Silhouette score", color="#ff7f0e", fontsize=30)
 		ax_silhouette.tick_params(axis="y", labelcolor="#ff7f0e")
-		ax_inertia.axvline(best_k, color="red", linestyle="--", alpha=0.65)
-
-		lines = inertia_line + silhouette_line
-		labels = [line.get_label() for line in lines]
-		labels.append(f"Best k={best_k}")
-		handles = lines + [plt.Line2D([0], [0], color="red", marker="o", linestyle="--")]
-		ax_inertia.legend(handles, labels, loc="best")
-		plt.title(f"{file_prefix} elbow and silhouette analysis")
+		ax_silhouette.tick_params(axis="y", labelsize=15)
+		ax_silhouette.yaxis.set_major_formatter(FormatStrFormatter("%.0f"))
+		ax_silhouette.text(
+			1.0,
+			1.02,
+			r"$\times 10^{-2}$",
+			transform=ax_silhouette.transAxes,
+			ha="right",
+			va="bottom",
+			fontsize=15,
+			color="#ff7f0e",
+		)
 		fig.tight_layout()
 
 		combined_path = output_dir / f"{file_prefix}_elbow_silhouette.png"
 		fig.savefig(combined_path, dpi=150)
+		if selected_k is not None:
+			selected_combined_path = output_dir / f"k_{selected_k}_{file_prefix}_elbow_silhouette.png"
+			fig.savefig(selected_combined_path, dpi=150)
+			print(f"[OK] Selected-k combined elbow/silhouette plot: {selected_combined_path}")
 		plt.close(fig)
 		print(f"[OK] Combined elbow/silhouette plot: {combined_path}")
 
@@ -1402,6 +2512,7 @@ def save_cluster_pca_scatter(
 	labels: np.ndarray,
 	output_dir: Path,
 	file_prefix: str,
+	selected_k: int | None = None,
 ) -> None:
 	if X_cluster.shape[0] < 2 or X_cluster.shape[1] < 2:
 		return
@@ -1410,26 +2521,50 @@ def save_cluster_pca_scatter(
 	pca = PCA(n_components=2, random_state=RANDOM_STATE)
 	X_2d = pca.fit_transform(X_cluster)
 	explained = pca.explained_variance_ratio_ * 100
+	cluster_ids = np.asarray(labels, dtype=int)
+	pca_df = pd.DataFrame(
+		{
+			"pc1": X_2d[:, 0],
+			"pc2": X_2d[:, 1],
+			"cluster": cluster_ids,
+			"pc1_variance": explained[0],
+			"pc2_variance": explained[1],
+		}
+	)
 
-	plt.figure(figsize=(8, 6))
+	plt.figure(figsize=(10, 7.5))
+	cluster_count = int(cluster_ids.max()) + 1 if cluster_ids.size else 1
+	cluster_cmap = build_cluster_colormap(cluster_count)
+	cluster_norm = BoundaryNorm(np.arange(-0.5, cluster_count + 0.5, 1), cluster_cmap.N)
 	scatter = plt.scatter(
 		X_2d[:, 0],
 		X_2d[:, 1],
-		c=labels,
-		cmap="tab10",
+		c=cluster_ids,
+		cmap=cluster_cmap,
+		norm=cluster_norm,
 		s=28,
 		alpha=0.8,
 		edgecolors="none",
 	)
-	plt.xlabel(f"PC1 ({explained[0]:.1f}% variance)")
-	plt.ylabel(f"PC2 ({explained[1]:.1f}% variance)")
-	plt.title(f"{file_prefix} cluster visualization (PCA 2D)")
+	plt.xlabel(f"PC1 ({explained[0]:.1f}% variance)", fontsize=36)
+	plt.ylabel(f"PC2 ({explained[1]:.1f}% variance)", fontsize=36)
+	plt.tick_params(axis="both", labelsize=28)
 	plt.grid(True, alpha=0.25)
-	plt.colorbar(scatter, label="Cluster")
+	colorbar = plt.colorbar(scatter, label="Cluster", ticks=np.arange(cluster_count))
+	colorbar.ax.tick_params(labelsize=26)
+	colorbar.set_label("Cluster", fontsize=32)
 	plt.tight_layout()
 
 	plot_path = output_dir / f"{file_prefix}_clusters_pca_2d.png"
-	plt.savefig(plot_path, dpi=150)
+	plt.savefig(plot_path, dpi=300)
+	pca_csv_path = output_dir / f"{file_prefix}_clusters_pca_2d.csv"
+	pca_df.to_csv(pca_csv_path, index=False)
+	if selected_k is not None:
+		selected_plot_path = output_dir / f"k_{selected_k}_{file_prefix}_clusters_pca_2d.png"
+		plt.savefig(selected_plot_path, dpi=300)
+		selected_pca_csv_path = output_dir / f"k_{selected_k}_{file_prefix}_clusters_pca_2d.csv"
+		pca_df.to_csv(selected_pca_csv_path, index=False)
+		print(f"[OK] Selected-k Cluster PCA 2D plot: {selected_plot_path}")
 	plt.close()
 	print(f"[OK] Cluster PCA 2D plot: {plot_path}")
 
@@ -1631,6 +2766,7 @@ def run_clustering_experiment(
 	encoding_dim: int,
 	feature_percent: float,
 	random_state: int | None,
+	cluster_k: int | None,
 	cluster_min_k: int,
 	cluster_max_k: int,
 	feature_chunk_size: int,
@@ -1660,6 +2796,17 @@ def run_clustering_experiment(
 
 	effective_min_k = cluster_min_k
 	effective_max_k = cluster_max_k
+	if cluster_k is not None:
+		if cluster_k < 2:
+			raise ValueError("--cluster-k en az 2 olmali.")
+		if cluster_k >= X_raw.shape[0]:
+			raise ValueError(f"--cluster-k degeri satir sayisindan kucuk olmali. Gelen k={cluster_k}, satir={X_raw.shape[0]}")
+		effective_min_k = min(effective_min_k, cluster_k)
+		effective_max_k = max(effective_max_k, cluster_k)
+		print(
+			f"[INFO] Sabit cluster k kullaniliyor: k={cluster_k}. "
+			f"Elbow/silhouette grafikleri k={effective_min_k}-{effective_max_k} araliginda cizilecek."
+		)
 	if y_all is not None and y_all.nunique(dropna=True) > 1:
 		class_count = int(y_all.nunique(dropna=True))
 		print(
@@ -1674,6 +2821,7 @@ def run_clustering_experiment(
 		min_k=effective_min_k,
 		max_k=effective_max_k,
 		random_state=random_state,
+		selected_k=cluster_k,
 	)
 	org_scores_path = output_dir / "ORG_cluster_scores.csv"
 	org_scores_df.to_csv(org_scores_path, index=False)
@@ -1681,12 +2829,14 @@ def run_clustering_experiment(
 		scores_df=org_scores_df,
 		output_dir=output_dir,
 		file_prefix="ORG",
+		selected_k=cluster_k,
 	)
 	save_cluster_pca_scatter(
 		X_cluster=X_org_scaled,
 		labels=org_best_labels,
 		output_dir=output_dir,
 		file_prefix="ORG",
+		selected_k=cluster_k,
 	)
 	org_assignments_df = pd.DataFrame(
 		{
@@ -1706,6 +2856,7 @@ def run_clustering_experiment(
 		"selected_feature_count": len(feature_names),
 		"cluster_min_k": effective_min_k,
 		"cluster_max_k": effective_max_k,
+		"fixed_cluster_k": cluster_k,
 		"best_k": int(org_best_row["k"]),
 		"silhouette_score": float(org_best_row["silhouette_score"]),
 		"inertia": float(org_best_row["inertia"]),
@@ -1740,6 +2891,7 @@ def run_clustering_experiment(
 		min_k=effective_min_k,
 		max_k=effective_max_k,
 		random_state=random_state,
+		selected_k=cluster_k,
 	)
 
 	scores_path = output_dir / f"top_{feature_percent_tag}_cluster_scores.csv"
@@ -1748,12 +2900,14 @@ def run_clustering_experiment(
 		scores_df=scores_df,
 		output_dir=output_dir,
 		file_prefix=f"top_{feature_percent_tag}",
+		selected_k=cluster_k,
 	)
 	save_cluster_pca_scatter(
 		X_cluster=X_selected_scaled,
 		labels=best_labels,
 		output_dir=output_dir,
 		file_prefix=f"top_{feature_percent_tag}",
+		selected_k=cluster_k,
 	)
 
 	assignments_df = pd.DataFrame(
@@ -1776,6 +2930,7 @@ def run_clustering_experiment(
 		"selected_feature_count": len(selected_df),
 		"cluster_min_k": effective_min_k,
 		"cluster_max_k": effective_max_k,
+		"fixed_cluster_k": cluster_k,
 		"best_k": int(best_row["k"]),
 		"silhouette_score": float(best_row["silhouette_score"]),
 		"inertia": float(best_row["inertia"]),
@@ -1824,6 +2979,621 @@ def should_use_feature_chunking(
 	return feature_count > chunk_feature_threshold
 
 
+def preprocess_explicit_train_validation_data(
+	train_df: pd.DataFrame,
+	validation_df: pd.DataFrame,
+	target_column: str,
+	id_column: str | None,
+) -> dict:
+	train_df = drop_id_column(train_df, id_column=id_column)
+	validation_df = drop_id_column(validation_df, id_column=id_column)
+	train_df = encode_target(train_df, target_column=target_column)
+	validation_df = encode_target(validation_df, target_column=target_column)
+
+	X_train_raw, y_train = split_features_target(train_df, target_column=target_column)
+	X_validation_raw, y_validation = split_features_target(validation_df, target_column=target_column)
+	X_train_raw = keep_numeric_features_only(handle_pid_unrealistic_zeros(X_train_raw))
+	X_validation_raw = keep_numeric_features_only(handle_pid_unrealistic_zeros(X_validation_raw))
+
+	missing_features = [feature for feature in X_train_raw.columns if feature not in X_validation_raw.columns]
+	if missing_features:
+		raise ValueError(
+			"Validation dosyasinda train dosyasinda bulunan feature kolonlari eksik. "
+			f"Ornek eksikler: {missing_features[:10]}"
+		)
+
+	X_validation_raw = X_validation_raw[X_train_raw.columns]
+	return {
+		"X_train": X_train_raw,
+		"X_validation": X_validation_raw,
+		"y_train": y_train,
+		"y_validation": y_validation,
+	}
+
+
+def save_binary_classification_report_outputs(
+	y_true: np.ndarray,
+	y_pred: np.ndarray,
+	y_score: np.ndarray,
+	output_dir: Path,
+	metrics_dir: Path,
+	file_prefix: str,
+	metric_prefix: str,
+	base_metrics: dict,
+) -> dict:
+	predictions_path = save_classification_predictions(
+		y_true=y_true,
+		y_pred=y_pred,
+		y_score=y_score,
+		output_dir=output_dir,
+		file_prefix=file_prefix,
+	)
+	confusion_matrix_path = save_classification_confusion_matrix_plot(
+		y_true=y_true,
+		y_pred=y_pred,
+		output_dir=output_dir,
+		file_prefix=file_prefix,
+	)
+	precision_recall_path = save_classification_precision_recall_plot(
+		y_true=y_true,
+		y_score=y_score,
+		output_dir=output_dir,
+		file_prefix=file_prefix,
+	)
+	roc_path = save_classification_roc_plot(
+		y_true=y_true,
+		y_score=y_score,
+		output_dir=output_dir,
+		file_prefix=file_prefix,
+	)
+
+	metrics_data = dict(base_metrics)
+	metrics_data.update(
+		rename_classification_metric_prefix(
+			compute_binary_classification_metrics(y_true=y_true, y_pred=y_pred, y_score=y_score),
+			metric_prefix,
+		)
+	)
+	if predictions_path is not None:
+		metrics_data["classification_predictions_path"] = str(predictions_path)
+	if confusion_matrix_path is not None:
+		metrics_data["confusion_matrix_path"] = str(confusion_matrix_path)
+	if precision_recall_path is not None:
+		metrics_data["precision_recall_curve_path"] = str(precision_recall_path)
+	if roc_path is not None:
+		metrics_data["roc_curve_path"] = str(roc_path)
+
+	save_json(metrics_data, metrics_dir / f"{file_prefix}_metrics.json")
+	return metrics_data
+
+
+def run_chunked_binary_train_validation_experiment(
+	X_train_raw: pd.DataFrame,
+	X_validation_raw: pd.DataFrame,
+	y_train: np.ndarray,
+	y_validation: np.ndarray,
+	dataset_folder: str,
+	validation_dataset_folder: str,
+	encoding_dim: int,
+	feature_percent: float,
+	random_state: int | None,
+	classifier_epochs: int,
+	classifier_hidden_units: tuple[int, ...],
+	classifier_dropout_rates: tuple[float, ...] | None,
+	classifier_learning_rate: float,
+	classifier_model: str,
+	classifier_early_stopping_patience: int | None,
+	autoencoder_early_stopping_patience: int | None,
+	classifier_early_stopping_monitor: str,
+	classifier_early_stopping_min_delta: float,
+	autoencoder_early_stopping_min_delta: float,
+	classifier_class_weight: str,
+	classifier_sampling: str,
+	feature_chunk_size: int,
+	save_training_plots: bool,
+	start_time: float,
+) -> tuple[float, float]:
+	feature_names = X_train_raw.columns.tolist()
+	feature_chunks = split_feature_names_into_chunks(feature_names, feature_chunk_size)
+	feature_percent_tag = format_feature_percent_tag(feature_percent)
+
+	output_dir = Path("outputs") / "autoencoder" / dataset_folder
+	metrics_dir = output_dir / "metrics"
+	chunks_dir = output_dir / "chunks"
+	history_dir = output_dir / "training_history"
+	ensure_dir(output_dir)
+	ensure_dir(metrics_dir)
+	ensure_dir(chunks_dir)
+	if save_training_plots:
+		ensure_dir(history_dir)
+
+	print(
+		f"[INFO] Explicit train/validation icin büyük feature seti tespit edildi: "
+		f"{len(feature_names)} feature. ORG full-feature egitimi atlanip "
+		f"{len(feature_chunks)} parcali feature ranking yapilacak (chunk_size={feature_chunk_size})."
+	)
+
+	chunk_selected_frames: list[pd.DataFrame] = []
+	chunk_summaries: list[dict] = []
+	for chunk_idx, chunk_feature_names in enumerate(feature_chunks, start=1):
+		chunk_name = f"chunk_{chunk_idx:03d}"
+		chunk_dir = chunks_dir / chunk_name
+		ensure_dir(chunk_dir)
+		print(
+			f"\n[INFO] {chunk_name}/{len(feature_chunks):03d} train/validation egitimi basliyor "
+			f"(feature sayisi: {len(chunk_feature_names)})."
+		)
+
+		X_train_chunk_raw = X_train_raw[chunk_feature_names]
+		X_validation_chunk_raw = X_validation_raw[chunk_feature_names]
+		X_train_chunk, X_validation_chunk, _ = scale_data(X_train_chunk_raw, X_validation_chunk_raw)
+		(
+			chunk_validation_mse,
+			chunk_validation_accuracy,
+			chunk_autoencoder,
+			_,
+			chunk_train_sub,
+			_,
+			_,
+		) = train_and_evaluate_pipeline(
+			X_train_chunk.astype(np.float32),
+			X_validation_chunk.astype(np.float32),
+			y_train,
+			y_validation,
+			encoding_dim,
+			random_state,
+			classifier_epochs,
+			classifier_hidden_units,
+			classifier_dropout_rates,
+			classifier_learning_rate,
+			classifier_model,
+			classifier_early_stopping_patience,
+			autoencoder_early_stopping_patience,
+			classifier_early_stopping_monitor,
+			classifier_early_stopping_min_delta,
+			autoencoder_early_stopping_min_delta,
+			classifier_class_weight=classifier_class_weight,
+			classifier_sampling=classifier_sampling,
+			history_output_dir=history_dir if save_training_plots else None,
+			history_prefix=chunk_name if save_training_plots else None,
+		)
+
+		chunk_weights_path = chunk_dir / "first_layer_W_list.csv"
+		save_feature_weighted_lists(
+			chunk_autoencoder,
+			chunk_train_sub,
+			chunk_feature_names,
+			chunk_weights_path,
+		)
+		chunk_selected_path = chunk_dir / f"top_{feature_percent_tag}_max_abs_features.csv"
+		chunk_selected_df = save_top_percent_features_by_abs_max_weight(
+			weight_list_csv_path=chunk_weights_path,
+			feature_names=chunk_feature_names,
+			feature_percent=feature_percent,
+			output_path=chunk_selected_path,
+		)
+		chunk_selected_df.insert(0, "chunk", chunk_name)
+		chunk_selected_frames.append(chunk_selected_df)
+		chunk_summary = {
+			"chunk": chunk_name,
+			"feature_count": len(chunk_feature_names),
+			"selected_feature_count": len(chunk_selected_df),
+			"validation_mse": chunk_validation_mse,
+			"validation_accuracy": chunk_validation_accuracy,
+			"weights_path": str(chunk_weights_path),
+			"selected_features_path": str(chunk_selected_path),
+		}
+		chunk_summaries.append(chunk_summary)
+		save_json(chunk_summary, metrics_dir / f"{chunk_name}_train_validation_metrics.json")
+		print(
+			f"[OK] {chunk_name} tamamlandi. Top %{feature_percent}: {len(chunk_selected_df)} feature, "
+			f"validation_accuracy: {chunk_validation_accuracy:.6f}"
+		)
+
+	all_chunk_selected_df = pd.concat(chunk_selected_frames, ignore_index=True)
+	all_chunk_selected_path = output_dir / f"chunked_top_{feature_percent_tag}_max_abs_features.csv"
+	all_chunk_selected_df.to_csv(all_chunk_selected_path, index=False)
+	merged_feature_names = list(dict.fromkeys(all_chunk_selected_df["feature_name"].tolist()))
+	merged_selected_df = pd.DataFrame(
+		{
+			"feature": [f"F{i+1}" for i in range(len(merged_feature_names))],
+			"feature_name": merged_feature_names,
+			"source": "chunked_top_features",
+		}
+	)
+	merged_selected_path = output_dir / f"chunked_merged_top_{feature_percent_tag}_features.csv"
+	merged_selected_df.to_csv(merged_selected_path, index=False)
+	# Normal top_X dosya adini da yazalim; sonraki calismalar bu listeyi tekrar kullanabilir.
+	merged_selected_df[["feature", "feature_name"]].to_csv(
+		output_dir / f"top_{feature_percent_tag}_max_abs_features.csv",
+		index=False,
+	)
+
+	print(
+		f"\n[INFO] Chunk top feature'lari birlestirildi: {len(merged_feature_names)} feature. "
+		"Final train/validation egitimi basliyor."
+	)
+	X_train_final_raw = X_train_raw[merged_feature_names]
+	X_validation_final_raw = X_validation_raw[merged_feature_names]
+	X_train_final, X_validation_final, _ = scale_data(X_train_final_raw, X_validation_final_raw)
+	(
+		final_validation_mse,
+		final_validation_accuracy,
+		_,
+		_,
+		_,
+		final_validation_y_pred,
+		final_validation_y_score,
+		final_train_y_pred,
+		final_train_y_score,
+	) = train_and_evaluate_pipeline(
+		X_train_final.astype(np.float32),
+		X_validation_final.astype(np.float32),
+		y_train,
+		y_validation,
+		encoding_dim,
+		random_state,
+		classifier_epochs,
+		classifier_hidden_units,
+		classifier_dropout_rates,
+		classifier_learning_rate,
+		classifier_model,
+		classifier_early_stopping_patience,
+		autoencoder_early_stopping_patience,
+		classifier_early_stopping_monitor,
+		classifier_early_stopping_min_delta,
+		autoencoder_early_stopping_min_delta,
+		classifier_class_weight=classifier_class_weight,
+		classifier_sampling=classifier_sampling,
+		history_output_dir=history_dir if save_training_plots else None,
+		history_prefix=f"chunked_top_{feature_percent_tag}_final" if save_training_plots else None,
+		return_train_predictions=True,
+	)
+
+	elapsed_seconds = time.perf_counter() - start_time
+	common_base = {
+		"task": "classification",
+		"mode": "explicit_train_validation_chunked",
+		"chunked_feature_selection": True,
+		"validation_dataset": validation_dataset_folder,
+		"feature_percent": feature_percent,
+		"original_feature_count": len(feature_names),
+		"feature_chunk_size": feature_chunk_size,
+		"chunk_count": len(feature_chunks),
+		"merged_feature_count": len(merged_feature_names),
+		"selected_feature_count": len(merged_feature_names),
+		"threshold": THRESHOLD,
+		"classifier_model": classifier_model,
+		"classifier_class_weight": classifier_class_weight,
+		"classifier_sampling": classifier_sampling,
+		"elapsed_seconds": elapsed_seconds,
+		"all_chunk_selected_features_path": str(all_chunk_selected_path),
+		"merged_selected_features_path": str(merged_selected_path),
+		"chunk_summaries": chunk_summaries,
+	}
+	train_metrics = save_binary_classification_report_outputs(
+		y_true=y_train,
+		y_pred=final_train_y_pred,
+		y_score=final_train_y_score,
+		output_dir=output_dir,
+		metrics_dir=metrics_dir,
+		file_prefix=f"top_{feature_percent_tag}_train",
+		metric_prefix="train",
+		base_metrics={**common_base, "feature_set": f"top_{feature_percent_tag}"},
+	)
+	validation_metrics = save_binary_classification_report_outputs(
+		y_true=y_validation,
+		y_pred=final_validation_y_pred,
+		y_score=final_validation_y_score,
+		output_dir=output_dir,
+		metrics_dir=metrics_dir,
+		file_prefix=f"top_{feature_percent_tag}_validation",
+		metric_prefix="validation",
+		base_metrics={
+			**common_base,
+			"feature_set": f"top_{feature_percent_tag}",
+			"validation_mse": final_validation_mse,
+		},
+	)
+	summary = {
+		"task": "classification",
+		"mode": "explicit_train_validation_chunked",
+		"dataset": dataset_folder,
+		"validation_dataset": validation_dataset_folder,
+		"feature_percent": feature_percent,
+		"selected_feature_count": len(merged_feature_names),
+		"ORG_full_feature_note": "ORG full-feature egitimi buyuk veri/RAM nedeniyle chunked modda atlandi.",
+		f"top_{feature_percent_tag}_train": train_metrics,
+		f"top_{feature_percent_tag}_validation": validation_metrics,
+	}
+	summary_path = metrics_dir / f"top_{feature_percent_tag}_train_validation_summary.json"
+	save_json(summary, summary_path)
+
+	print("\n[OK] Chunked explicit train/validation classification tamamlandi.")
+	print(f"[OK] Top %{feature_percent} train accuracy: {train_metrics.get('train_accuracy'):.6f}")
+	print(f"[OK] Top %{feature_percent} validation accuracy: {validation_metrics.get('validation_accuracy'):.6f}")
+	print(f"[OK] Ozet metrik dosyasi: {summary_path}")
+	return 0.0, float(validation_metrics.get("validation_accuracy", 0.0))
+
+
+def run_binary_train_validation_experiment(
+	train_df: pd.DataFrame,
+	validation_df: pd.DataFrame,
+	dataset_folder: str,
+	validation_dataset_folder: str,
+	target_column: str,
+	id_column: str | None,
+	encoding_dim: int,
+	feature_percent: float,
+	random_state: int | None,
+	classifier_epochs: int,
+	classifier_hidden_units: tuple[int, ...],
+	classifier_dropout_rates: tuple[float, ...] | None,
+	classifier_learning_rate: float,
+	classifier_model: str = DEFAULT_CLASSIFIER_MODEL,
+	classifier_early_stopping_patience: int | None = DEFAULT_EARLY_STOPPING_PATIENCE,
+	autoencoder_early_stopping_patience: int | None = DEFAULT_AUTOENCODER_EARLY_STOPPING_PATIENCE,
+	classifier_early_stopping_monitor: str = DEFAULT_CLASSIFIER_EARLY_STOPPING_MONITOR,
+	classifier_early_stopping_min_delta: float = DEFAULT_EARLY_STOPPING_MIN_DELTA,
+	autoencoder_early_stopping_min_delta: float = DEFAULT_AUTOENCODER_EARLY_STOPPING_MIN_DELTA,
+	classifier_class_weight: str = "none",
+	classifier_sampling: str = "none",
+	feature_chunk_size: int = DEFAULT_FEATURE_CHUNK_SIZE,
+	chunk_feature_threshold: int = DEFAULT_CHUNK_FEATURE_THRESHOLD,
+	enable_feature_chunking: bool = True,
+	save_training_plots: bool = False,
+) -> tuple[float, float]:
+	start_time = time.perf_counter()
+	processed = preprocess_explicit_train_validation_data(
+		train_df=train_df,
+		validation_df=validation_df,
+		target_column=target_column,
+		id_column=id_column,
+	)
+	X_train_raw = processed["X_train"]
+	X_validation_raw = processed["X_validation"]
+	y_train = processed["y_train"].to_numpy().astype(np.int32)
+	y_validation = processed["y_validation"].to_numpy().astype(np.int32)
+	for set_name, y_values in {"train": y_train, "validation": y_validation}.items():
+		if not set(np.unique(y_values)).issubset({0, 1}):
+			raise ValueError(f"{set_name} dosyasi binary etiket bekliyor. Label degerleri sadece 0 ve 1 olmali.")
+
+	print(f"[INFO] Explicit train/validation modu.")
+	print(f"[INFO] Train X shape      : {X_train_raw.shape}")
+	print(f"[INFO] Validation X shape : {X_validation_raw.shape}")
+	print(f"[INFO] Train label dagilimi: {pd.Series(y_train).value_counts().to_dict()}")
+	print(f"[INFO] Validation label dagilimi: {pd.Series(y_validation).value_counts().to_dict()}")
+
+	if should_use_feature_chunking(
+		feature_count=X_train_raw.shape[1],
+		chunk_feature_threshold=chunk_feature_threshold,
+		feature_chunk_size=feature_chunk_size,
+		enable_feature_chunking=enable_feature_chunking,
+	):
+		return run_chunked_binary_train_validation_experiment(
+			X_train_raw=X_train_raw,
+			X_validation_raw=X_validation_raw,
+			y_train=y_train,
+			y_validation=y_validation,
+			dataset_folder=dataset_folder,
+			validation_dataset_folder=validation_dataset_folder,
+			encoding_dim=encoding_dim,
+			feature_percent=feature_percent,
+			random_state=random_state,
+			classifier_epochs=classifier_epochs,
+			classifier_hidden_units=classifier_hidden_units,
+			classifier_dropout_rates=classifier_dropout_rates,
+			classifier_learning_rate=classifier_learning_rate,
+			classifier_model=classifier_model,
+			classifier_early_stopping_patience=classifier_early_stopping_patience,
+			autoencoder_early_stopping_patience=autoencoder_early_stopping_patience,
+			classifier_early_stopping_monitor=classifier_early_stopping_monitor,
+			classifier_early_stopping_min_delta=classifier_early_stopping_min_delta,
+			autoencoder_early_stopping_min_delta=autoencoder_early_stopping_min_delta,
+			classifier_class_weight=classifier_class_weight,
+			classifier_sampling=classifier_sampling,
+			feature_chunk_size=feature_chunk_size,
+			save_training_plots=save_training_plots,
+			start_time=start_time,
+		)
+
+	X_train, X_validation, _ = scale_data(X_train_raw, X_validation_raw)
+	X_train = X_train.astype(np.float32)
+	X_validation = X_validation.astype(np.float32)
+
+	output_dir = Path("outputs") / "autoencoder" / dataset_folder
+	metrics_dir = output_dir / "metrics"
+	history_dir = output_dir / "training_history"
+	ensure_dir(output_dir)
+	ensure_dir(metrics_dir)
+	if save_training_plots:
+		ensure_dir(history_dir)
+
+	(
+		validation_mse,
+		validation_accuracy,
+		autoencoder,
+		_,
+		X_train_sub_used,
+		validation_y_pred,
+		validation_y_score,
+		train_y_pred,
+		train_y_score,
+	) = train_and_evaluate_pipeline(
+		X_train,
+		X_validation,
+		y_train,
+		y_validation,
+		encoding_dim,
+		random_state,
+		classifier_epochs,
+		classifier_hidden_units,
+		classifier_dropout_rates,
+		classifier_learning_rate,
+		classifier_model,
+		classifier_early_stopping_patience,
+		autoencoder_early_stopping_patience,
+		classifier_early_stopping_monitor,
+		classifier_early_stopping_min_delta,
+		autoencoder_early_stopping_min_delta,
+		classifier_class_weight=classifier_class_weight,
+		classifier_sampling=classifier_sampling,
+		history_output_dir=history_dir if save_training_plots else None,
+		history_prefix="ORG" if save_training_plots else None,
+		return_train_predictions=True,
+	)
+
+	feature_names = X_train_raw.columns.tolist()
+	feature_percent_tag = format_feature_percent_tag(feature_percent)
+	selected_features_path = output_dir / f"top_{feature_percent_tag}_max_abs_features.csv"
+	selected_df = None
+	if selected_features_path.exists():
+		selected_df = load_selected_features_if_compatible(selected_features_path, feature_names)
+		if selected_df is not None:
+			print(f"[INFO] Mevcut feature listesi kullaniliyor: {selected_features_path}")
+	if selected_df is None:
+		weights_path = output_dir / "first_layer_W_list.csv"
+		save_feature_weighted_lists(autoencoder, X_train_sub_used, feature_names, weights_path)
+		selected_df = save_top_percent_features_by_abs_max_weight(
+			weight_list_csv_path=weights_path,
+			feature_names=feature_names,
+			feature_percent=feature_percent,
+			output_path=selected_features_path,
+		)
+
+	if len(selected_df) == len(feature_names):
+		filtered_validation_mse = validation_mse
+		filtered_validation_accuracy = validation_accuracy
+		filtered_validation_y_pred = validation_y_pred
+		filtered_validation_y_score = validation_y_score
+		filtered_train_y_pred = train_y_pred
+		filtered_train_y_score = train_y_score
+		print("[INFO] Top %100 tum feature'lari iceriyor. ORG sonucu yeniden egitilmeden kullaniliyor.")
+	else:
+		selected_feature_names = selected_df["feature_name"].tolist()
+		X_train_filtered_raw = X_train_raw[selected_feature_names]
+		X_validation_filtered_raw = X_validation_raw[selected_feature_names]
+		X_train_filtered, X_validation_filtered, _ = scale_data(X_train_filtered_raw, X_validation_filtered_raw)
+		(
+			filtered_validation_mse,
+			filtered_validation_accuracy,
+			_,
+			_,
+			_,
+			filtered_validation_y_pred,
+			filtered_validation_y_score,
+			filtered_train_y_pred,
+			filtered_train_y_score,
+		) = train_and_evaluate_pipeline(
+			X_train_filtered.astype(np.float32),
+			X_validation_filtered.astype(np.float32),
+			y_train,
+			y_validation,
+			encoding_dim,
+			random_state,
+			classifier_epochs,
+			classifier_hidden_units,
+			classifier_dropout_rates,
+			classifier_learning_rate,
+			classifier_model,
+			classifier_early_stopping_patience,
+			autoencoder_early_stopping_patience,
+			classifier_early_stopping_monitor,
+			classifier_early_stopping_min_delta,
+			autoencoder_early_stopping_min_delta,
+			classifier_class_weight=classifier_class_weight,
+			classifier_sampling=classifier_sampling,
+			history_output_dir=history_dir if save_training_plots else None,
+			history_prefix=f"top_{feature_percent_tag}" if save_training_plots else None,
+			return_train_predictions=True,
+		)
+
+	elapsed_seconds = time.perf_counter() - start_time
+	common_base = {
+		"task": "classification",
+		"validation_dataset": validation_dataset_folder,
+		"threshold": THRESHOLD,
+		"classifier_model": classifier_model,
+		"classifier_class_weight": classifier_class_weight,
+		"classifier_sampling": classifier_sampling,
+		"elapsed_seconds": elapsed_seconds,
+	}
+	org_train_metrics = save_binary_classification_report_outputs(
+		y_true=y_train,
+		y_pred=train_y_pred,
+		y_score=train_y_score,
+		output_dir=output_dir,
+		metrics_dir=metrics_dir,
+		file_prefix="ORG_train",
+		metric_prefix="train",
+		base_metrics={**common_base, "feature_set": "ORG"},
+	)
+	org_validation_metrics = save_binary_classification_report_outputs(
+		y_true=y_validation,
+		y_pred=validation_y_pred,
+		y_score=validation_y_score,
+		output_dir=output_dir,
+		metrics_dir=metrics_dir,
+		file_prefix="ORG_validation",
+		metric_prefix="validation",
+		base_metrics={**common_base, "feature_set": "ORG", "validation_mse": validation_mse},
+	)
+	top_train_metrics = save_binary_classification_report_outputs(
+		y_true=y_train,
+		y_pred=filtered_train_y_pred,
+		y_score=filtered_train_y_score,
+		output_dir=output_dir,
+		metrics_dir=metrics_dir,
+		file_prefix=f"top_{feature_percent_tag}_train",
+		metric_prefix="train",
+		base_metrics={
+			**common_base,
+			"feature_set": f"top_{feature_percent_tag}",
+			"feature_percent": feature_percent,
+			"selected_feature_count": len(selected_df),
+		},
+	)
+	top_validation_metrics = save_binary_classification_report_outputs(
+		y_true=y_validation,
+		y_pred=filtered_validation_y_pred,
+		y_score=filtered_validation_y_score,
+		output_dir=output_dir,
+		metrics_dir=metrics_dir,
+		file_prefix=f"top_{feature_percent_tag}_validation",
+		metric_prefix="validation",
+		base_metrics={
+			**common_base,
+			"feature_set": f"top_{feature_percent_tag}",
+			"feature_percent": feature_percent,
+			"selected_feature_count": len(selected_df),
+			"validation_mse": filtered_validation_mse,
+		},
+	)
+	summary = {
+		"task": "classification",
+		"mode": "explicit_train_validation",
+		"dataset": dataset_folder,
+		"validation_dataset": validation_dataset_folder,
+		"feature_percent": feature_percent,
+		"selected_feature_count": len(selected_df),
+		"ORG_train": org_train_metrics,
+		"ORG_validation": org_validation_metrics,
+		f"top_{feature_percent_tag}_train": top_train_metrics,
+		f"top_{feature_percent_tag}_validation": top_validation_metrics,
+	}
+	save_json(summary, metrics_dir / f"top_{feature_percent_tag}_train_validation_summary.json")
+
+	print("\n[OK] Explicit train/validation classification tamamlandi.")
+	print(f"[OK] ORG train accuracy: {org_train_metrics.get('train_accuracy'):.6f}")
+	print(f"[OK] ORG validation accuracy: {org_validation_metrics.get('validation_accuracy'):.6f}")
+	print(f"[OK] Top %{feature_percent} train accuracy: {top_train_metrics.get('train_accuracy'):.6f}")
+	print(f"[OK] Top %{feature_percent} validation accuracy: {top_validation_metrics.get('validation_accuracy'):.6f}")
+	print(f"[OK] Ozet metrik dosyasi: {metrics_dir / f'top_{feature_percent_tag}_train_validation_summary.json'}")
+	return float(org_validation_metrics.get("validation_accuracy", 0.0)), float(
+		top_validation_metrics.get("validation_accuracy", 0.0)
+	)
+
+
 def run_chunked_binary_experiment(
 	df: pd.DataFrame,
 	processed: dict,
@@ -1837,11 +3607,14 @@ def run_chunked_binary_experiment(
 	classifier_hidden_units: tuple[int, ...],
 	classifier_dropout_rates: tuple[float, ...] | None,
 	classifier_learning_rate: float,
+	classifier_model: str,
 	classifier_early_stopping_patience: int | None,
 	autoencoder_early_stopping_patience: int | None,
 	classifier_early_stopping_monitor: str,
 	classifier_early_stopping_min_delta: float,
 	autoencoder_early_stopping_min_delta: float,
+	classifier_class_weight: str,
+	classifier_sampling: str,
 	feature_chunk_size: int,
 	save_training_plots: bool,
 	current_class_label: int | None = None,
@@ -1891,22 +3664,33 @@ def run_chunked_binary_experiment(
 		X_train_chunk = X_train_chunk.astype(np.float32)
 		X_test_chunk = X_test_chunk.astype(np.float32)
 
-		chunk_test_mse, chunk_test_accuracy, chunk_autoencoder, _, chunk_train_sub, _, _ = train_and_evaluate_pipeline(
-			X_train_chunk,
-			X_test_chunk,
-			y_train,
-			y_test,
-			encoding_dim,
-			random_state,
-			classifier_epochs,
-			classifier_hidden_units,
-			classifier_dropout_rates,
-			classifier_learning_rate,
-			classifier_early_stopping_patience,
-			autoencoder_early_stopping_patience,
-			classifier_early_stopping_monitor,
-			classifier_early_stopping_min_delta,
-			autoencoder_early_stopping_min_delta,
+		(
+			chunk_test_mse,
+			_chunk_test_accuracy,
+			chunk_autoencoder,
+			_chunk_encoder,
+			chunk_train_sub,
+			_chunk_y_pred,
+			_chunk_y_score,
+		) = train_and_evaluate_pipeline(
+			X_train=X_train_chunk,
+			X_test=X_test_chunk,
+			y_train=y_train,
+			y_test=y_test,
+			encoding_dim=encoding_dim,
+			random_state=random_state,
+			classifier_epochs=classifier_epochs,
+			classifier_hidden_units=classifier_hidden_units,
+			classifier_dropout_rates=classifier_dropout_rates,
+			classifier_learning_rate=classifier_learning_rate,
+			classifier_model=classifier_model,
+			classifier_early_stopping_patience=classifier_early_stopping_patience,
+			autoencoder_early_stopping_patience=autoencoder_early_stopping_patience,
+			classifier_early_stopping_monitor=classifier_early_stopping_monitor,
+			classifier_early_stopping_min_delta=classifier_early_stopping_min_delta,
+			autoencoder_early_stopping_min_delta=autoencoder_early_stopping_min_delta,
+			classifier_class_weight=classifier_class_weight,
+			classifier_sampling=classifier_sampling,
 			history_output_dir=history_dir if save_training_plots else None,
 			history_prefix=chunk_name if save_training_plots else None,
 		)
@@ -1935,7 +3719,7 @@ def run_chunked_binary_experiment(
 				"feature_count": len(chunk_feature_names),
 				"selected_feature_count": len(chunk_selected_df),
 				"test_mse": chunk_test_mse,
-				"test_accuracy": chunk_test_accuracy,
+				"test_accuracy": None,
 				"weights_path": str(chunk_weights_path),
 				"selected_features_path": str(chunk_selected_path),
 			}
@@ -1944,8 +3728,7 @@ def run_chunked_binary_experiment(
 		save_json(chunk_summaries[-1], metrics_dir / f"{chunk_name}_test_metrics.json")
 		print(
 			f"[OK] {chunk_name} tamamlandi. "
-			f"Top %{feature_percent}: {len(chunk_selected_df)} feature, "
-			f"accuracy: {chunk_test_accuracy:.6f}"
+			f"Top %{feature_percent}: {len(chunk_selected_df)} feature."
 		)
 
 	all_chunk_selected_df = pd.concat(chunk_selected_frames, ignore_index=True)
@@ -1982,22 +3765,33 @@ def run_chunked_binary_experiment(
 		f"\n[INFO] Chunk top feature'lari birlestirildi: "
 		f"{len(merged_feature_names)} feature. Final egitim basliyor."
 	)
-	final_test_mse, final_test_accuracy, _, _, _, final_y_pred, final_y_score = train_and_evaluate_pipeline(
-		X_train_merged,
-		X_test_merged,
-		y_train,
-		y_test,
-		encoding_dim,
-		random_state,
-		classifier_epochs,
-		classifier_hidden_units,
-		classifier_dropout_rates,
-		classifier_learning_rate,
-		classifier_early_stopping_patience,
-		autoencoder_early_stopping_patience,
-		classifier_early_stopping_monitor,
-		classifier_early_stopping_min_delta,
-		autoencoder_early_stopping_min_delta,
+	(
+		final_test_mse,
+		final_test_accuracy,
+		_final_autoencoder,
+		_final_encoder,
+		_final_train_sub,
+		final_y_pred,
+		final_y_score,
+	) = train_and_evaluate_pipeline(
+		X_train=X_train_merged,
+		X_test=X_test_merged,
+		y_train=y_train,
+		y_test=y_test,
+		encoding_dim=encoding_dim,
+		random_state=random_state,
+		classifier_epochs=classifier_epochs,
+		classifier_hidden_units=classifier_hidden_units,
+		classifier_dropout_rates=classifier_dropout_rates,
+		classifier_learning_rate=classifier_learning_rate,
+		classifier_model=classifier_model,
+		classifier_early_stopping_patience=classifier_early_stopping_patience,
+		autoencoder_early_stopping_patience=autoencoder_early_stopping_patience,
+		classifier_early_stopping_monitor=classifier_early_stopping_monitor,
+		classifier_early_stopping_min_delta=classifier_early_stopping_min_delta,
+		autoencoder_early_stopping_min_delta=autoencoder_early_stopping_min_delta,
+		classifier_class_weight=classifier_class_weight,
+		classifier_sampling=classifier_sampling,
 		history_output_dir=history_dir if save_training_plots else None,
 		history_prefix=f"chunked_top_{feature_percent_tag}_final" if save_training_plots else None,
 	)
@@ -2034,18 +3828,22 @@ def run_chunked_binary_experiment(
 	)
 	final_metrics_data = {
 		"chunked_feature_selection": True,
-		"feature_percent": feature_percent,
+		"feature_percent": format_encoded_output_percent(feature_percent, dataset_folder),
 		"original_feature_count": len(feature_names),
 		"feature_chunk_size": feature_chunk_size,
 		"chunk_count": len(feature_chunks),
 		"merged_feature_count": len(merged_feature_names),
 		"test_mse": final_test_mse,
 		"threshold": THRESHOLD,
+		"classifier_model": classifier_model,
+		"classifier_class_weight": classifier_class_weight,
+		"classifier_sampling": classifier_sampling,
 		"chunk_summaries": chunk_summaries,
 		"all_chunk_selected_features_path": str(all_chunk_selected_path),
 		"merged_selected_features_path": str(merged_selected_path),
 		"merged_dataset_path": str(merged_dataset_path),
 	}
+	add_encoded_metric_metadata(final_metrics_data, feature_percent, dataset_folder)
 	final_metrics_data.update(final_classification_metrics)
 	if final_predictions_path is not None:
 		final_metrics_data["classification_predictions_path"] = str(final_predictions_path)
@@ -2063,8 +3861,10 @@ def run_chunked_binary_experiment(
 			"label_1": int(np.sum(y_test == 1)),
 		}
 
-	save_json(final_metrics_data, metrics_dir / f"chunked_top_{feature_percent_tag}_test_metrics.json")
-	save_json(final_metrics_data, metrics_dir / f"top_{feature_percent_tag}_test_metrics.json")
+	final_metrics_filename = format_test_metrics_filename(feature_percent, dataset_folder)
+	chunked_metrics_filename = f"chunked_{final_metrics_filename}"
+	save_json(final_metrics_data, metrics_dir / chunked_metrics_filename)
+	save_json(final_metrics_data, metrics_dir / final_metrics_filename)
 
 	print("\n[OK] Chunked autoencoder akisi tamamlandi.")
 	print(f"[OK] Orijinal feature sayisi: {len(feature_names)}")
@@ -2075,7 +3875,7 @@ def run_chunked_binary_experiment(
 	print(f"[OK] Chunk secim CSV: {all_chunk_selected_path}")
 	print(f"[OK] Birlesik feature CSV: {merged_selected_path}")
 	print(f"[OK] Birlesik dataset CSV: {merged_dataset_path} (satir: {len(merged_filtered_df)})")
-	print(f"[OK] Final metrik dosyasi: {metrics_dir / f'chunked_top_{feature_percent_tag}_test_metrics.json'}")
+	print(f"[OK] Final metrik dosyasi: {metrics_dir / chunked_metrics_filename}")
 	return final_test_accuracy, final_test_accuracy
 
 
@@ -2091,6 +3891,7 @@ def run_binary_experiment(
 	classifier_hidden_units: tuple[int, ...],
 	classifier_dropout_rates: tuple[float, ...] | None,
 	classifier_learning_rate: float,
+	classifier_model: str = DEFAULT_CLASSIFIER_MODEL,
 	feature_chunk_size: int = DEFAULT_FEATURE_CHUNK_SIZE,
 	chunk_feature_threshold: int = DEFAULT_CHUNK_FEATURE_THRESHOLD,
 	enable_feature_chunking: bool = True,
@@ -2099,6 +3900,8 @@ def run_binary_experiment(
 	classifier_early_stopping_monitor: str = DEFAULT_CLASSIFIER_EARLY_STOPPING_MONITOR,
 	classifier_early_stopping_min_delta: float = DEFAULT_EARLY_STOPPING_MIN_DELTA,
 	autoencoder_early_stopping_min_delta: float = DEFAULT_AUTOENCODER_EARLY_STOPPING_MIN_DELTA,
+	classifier_class_weight: str = "none",
+	classifier_sampling: str = "none",
 	save_training_plots: bool = False,
 	current_class_label: int | None = None,
 	class_counts: dict[int, int] | None = None,
@@ -2140,11 +3943,14 @@ def run_binary_experiment(
 				classifier_hidden_units=classifier_hidden_units,
 				classifier_dropout_rates=classifier_dropout_rates,
 				classifier_learning_rate=classifier_learning_rate,
+				classifier_model=classifier_model,
 				classifier_early_stopping_patience=classifier_early_stopping_patience,
 				autoencoder_early_stopping_patience=autoencoder_early_stopping_patience,
 				classifier_early_stopping_monitor=classifier_early_stopping_monitor,
 				classifier_early_stopping_min_delta=classifier_early_stopping_min_delta,
 				autoencoder_early_stopping_min_delta=autoencoder_early_stopping_min_delta,
+				classifier_class_weight=classifier_class_weight,
+				classifier_sampling=classifier_sampling,
 				feature_chunk_size=feature_chunk_size,
 				save_training_plots=save_training_plots,
 				current_class_label=current_class_label,
@@ -2163,28 +3969,147 @@ def run_binary_experiment(
 	if save_training_plots:
 		ensure_dir(history_dir)
 
-	test_mse, test_accuracy, autoencoder, _, X_train_sub_used, org_y_pred, org_y_score = train_and_evaluate_pipeline(
-		X_train,
-		X_test,
-		y_train,
-		y_test,
-		encoding_dim,
-		random_state,
-		classifier_epochs,
-		classifier_hidden_units,
-		classifier_dropout_rates,
-		classifier_learning_rate,
-		classifier_early_stopping_patience,
-		autoencoder_early_stopping_patience,
-		classifier_early_stopping_monitor,
-		classifier_early_stopping_min_delta,
-		autoencoder_early_stopping_min_delta,
+	if is_encoded_dataset_folder(dataset_folder):
+		print("[INFO] Dimension-reduction/encoded dataset tespit edildi.")
+		print("[INFO] FeatureRank ve ikinci autoencoder uygulanmayacak; direkt reduced feature'lar ile classifier egitilecek.")
+		print(
+			"[WARN] Onceden uretilmis tek encoded CSV yeniden split ediliyor. "
+			"Bu sonuc makaledeki held-out performans icin kullanilmamali; "
+			"ham dataset ile --evaluate-dimension-reduction kullanin."
+		)
+		output_feature_prefix = format_metric_output_prefix(feature_percent, dataset_folder)
+		output_feature_label = format_feature_output_label(feature_percent, dataset_folder)
+		filtered_metrics_filename = format_test_metrics_filename(feature_percent, dataset_folder)
+
+		direct_test_accuracy, direct_y_pred, direct_y_score = train_and_evaluate_direct_classifier(
+			X_train=X_train,
+			X_test=X_test,
+			y_train=y_train,
+			y_test=y_test,
+			random_state=random_state,
+			classifier_epochs=classifier_epochs,
+			classifier_hidden_units=classifier_hidden_units,
+			classifier_dropout_rates=classifier_dropout_rates,
+			classifier_learning_rate=classifier_learning_rate,
+			classifier_model=classifier_model,
+			classifier_early_stopping_patience=classifier_early_stopping_patience,
+			classifier_early_stopping_monitor=classifier_early_stopping_monitor,
+			classifier_early_stopping_min_delta=classifier_early_stopping_min_delta,
+			classifier_class_weight=classifier_class_weight,
+			classifier_sampling=classifier_sampling,
+			history_output_dir=history_dir if save_training_plots else None,
+			history_prefix=output_feature_prefix if save_training_plots else None,
+		)
+
+		elapsed_seconds = time.perf_counter() - start_time
+		predictions_path = save_classification_predictions(
+			y_true=y_test,
+			y_pred=direct_y_pred,
+			y_score=direct_y_score,
+			output_dir=output_dir,
+			file_prefix=output_feature_prefix,
+		)
+		confusion_matrix_path = save_classification_confusion_matrix_plot(
+			y_true=y_test,
+			y_pred=direct_y_pred,
+			output_dir=output_dir,
+			file_prefix=output_feature_prefix,
+		)
+		precision_recall_path = save_classification_precision_recall_plot(
+			y_true=y_test,
+			y_score=direct_y_score,
+			output_dir=output_dir,
+			file_prefix=output_feature_prefix,
+		)
+		roc_path = save_classification_roc_plot(
+			y_true=y_test,
+			y_score=direct_y_score,
+			output_dir=output_dir,
+			file_prefix=output_feature_prefix,
+		)
+		direct_metrics_data = {
+			"feature_percent": format_encoded_output_percent(feature_percent, dataset_folder),
+			"selected_feature_count": int(X_train_raw.shape[1]),
+			"latent_feature_count": int(X_train_raw.shape[1]),
+			"dimension_reduction_dataset": True,
+			"classification_input": "direct_dimension_reduced_features",
+			"test_mse": None,
+			"threshold": THRESHOLD,
+			"elapsed_seconds": elapsed_seconds,
+			"classifier_model": classifier_model,
+			"classifier_class_weight": classifier_class_weight,
+			"classifier_sampling": classifier_sampling,
+		}
+		add_encoded_metric_metadata(direct_metrics_data, feature_percent, dataset_folder)
+		direct_metrics_data.update(
+			compute_binary_classification_metrics(
+				y_true=y_test,
+				y_pred=direct_y_pred,
+				y_score=direct_y_score,
+			)
+		)
+		if predictions_path is not None:
+			direct_metrics_data["classification_predictions_path"] = str(predictions_path)
+		if confusion_matrix_path is not None:
+			direct_metrics_data["confusion_matrix_path"] = str(confusion_matrix_path)
+		if precision_recall_path is not None:
+			direct_metrics_data["precision_recall_curve_path"] = str(precision_recall_path)
+		if roc_path is not None:
+			direct_metrics_data["roc_curve_path"] = str(roc_path)
+		if current_class_label is not None and class_counts is not None:
+			direct_metrics_data["current_class_label"] = current_class_label
+			direct_metrics_data["class_counts"] = class_counts
+			direct_metrics_data["binary_label_counts"] = {
+				"label_0": int(np.sum(y_test == 0)),
+				"label_1": int(np.sum(y_test == 1)),
+			}
+
+		save_json(direct_metrics_data, metrics_dir / "ORG_test_metrics.json")
+		save_json(direct_metrics_data, metrics_dir / filtered_metrics_filename)
+
+		print("\n[OK] Dimension-reduction classifier egitimi tamamlandi.")
+		print(f"[OK] Direkt latent feature sayisi: {X_train_raw.shape[1]}")
+		print(f"[OK] {output_feature_label} dataset test_accuracy: {direct_test_accuracy:.6f}")
+		print(f"[OK] Calisma suresi: {elapsed_seconds:.2f} saniye")
+		print(f"[OK] {output_feature_label} metrik dosyasi: {metrics_dir / filtered_metrics_filename}")
+		return 0.0, direct_test_accuracy
+
+	(
+		test_mse,
+		test_accuracy,
+		autoencoder,
+		_org_encoder,
+		X_train_sub_used,
+		org_y_pred,
+		org_y_score,
+	) = train_and_evaluate_pipeline(
+		X_train=X_train,
+		X_test=X_test,
+		y_train=y_train,
+		y_test=y_test,
+		encoding_dim=encoding_dim,
+		random_state=random_state,
+		classifier_epochs=classifier_epochs,
+		classifier_hidden_units=classifier_hidden_units,
+		classifier_dropout_rates=classifier_dropout_rates,
+		classifier_learning_rate=classifier_learning_rate,
+		classifier_model=classifier_model,
+		classifier_early_stopping_patience=classifier_early_stopping_patience,
+		autoencoder_early_stopping_patience=autoencoder_early_stopping_patience,
+		classifier_early_stopping_monitor=classifier_early_stopping_monitor,
+		classifier_early_stopping_min_delta=classifier_early_stopping_min_delta,
+		autoencoder_early_stopping_min_delta=autoencoder_early_stopping_min_delta,
+		classifier_class_weight=classifier_class_weight,
+		classifier_sampling=classifier_sampling,
 		history_output_dir=history_dir if save_training_plots else None,
 		history_prefix="ORG" if save_training_plots else None,
 	)
 
 	feature_names = X_train_raw.columns.tolist()
 	feature_percent_tag = format_feature_percent_tag(feature_percent)
+	output_feature_percent = format_encoded_output_percent(feature_percent, dataset_folder)
+	output_feature_prefix = format_metric_output_prefix(feature_percent, dataset_folder)
+	output_feature_label = format_feature_output_label(feature_percent, dataset_folder)
 	selected_features_path = output_dir / f"top_{feature_percent_tag}_max_abs_features.csv"
 	selected_df = None
 	if selected_features_path.exists():
@@ -2219,7 +4144,7 @@ def run_binary_experiment(
 		filtered_test_accuracy = test_accuracy
 		filtered_y_pred = org_y_pred
 		filtered_y_score = org_y_score
-		print("[INFO] Top %100 tum feature'lari iceriyor. ORG sonucu yeniden egitilmeden kullaniliyor.")
+		print(f"[INFO] {output_feature_label} tum secili/encoded feature'lari iceriyor. ORG sonucu yeniden egitilmeden kullaniliyor.")
 	else:
 		selected_feature_names = selected_df["feature_name"].tolist()
 		X_train_filtered_raw = X_train_raw[selected_feature_names]
@@ -2228,24 +4153,35 @@ def run_binary_experiment(
 		# Ensure consistent float32 dtype
 		X_train_filtered = X_train_filtered.astype(np.float32)
 		X_test_filtered = X_test_filtered.astype(np.float32)
-		filtered_test_mse, filtered_test_accuracy, _, _, _, filtered_y_pred, filtered_y_score = train_and_evaluate_pipeline(
-			X_train_filtered,
-			X_test_filtered,
-			y_train_filtered,
-			y_test_filtered,
-			encoding_dim,
-			random_state,
-			classifier_epochs,
-			classifier_hidden_units,
-			classifier_dropout_rates,
-			classifier_learning_rate,
-			classifier_early_stopping_patience,
-			autoencoder_early_stopping_patience,
-			classifier_early_stopping_monitor,
-			classifier_early_stopping_min_delta,
-			autoencoder_early_stopping_min_delta,
+		(
+			filtered_test_mse,
+			filtered_test_accuracy,
+			_filtered_autoencoder,
+			_filtered_encoder,
+			_filtered_train_sub,
+			filtered_y_pred,
+			filtered_y_score,
+		) = train_and_evaluate_pipeline(
+			X_train=X_train_filtered,
+			X_test=X_test_filtered,
+			y_train=y_train_filtered,
+			y_test=y_test_filtered,
+			encoding_dim=encoding_dim,
+			random_state=random_state,
+			classifier_epochs=classifier_epochs,
+			classifier_hidden_units=classifier_hidden_units,
+			classifier_dropout_rates=classifier_dropout_rates,
+			classifier_learning_rate=classifier_learning_rate,
+			classifier_model=classifier_model,
+			classifier_early_stopping_patience=classifier_early_stopping_patience,
+			autoencoder_early_stopping_patience=autoencoder_early_stopping_patience,
+			classifier_early_stopping_monitor=classifier_early_stopping_monitor,
+			classifier_early_stopping_min_delta=classifier_early_stopping_min_delta,
+			autoencoder_early_stopping_min_delta=autoencoder_early_stopping_min_delta,
+			classifier_class_weight=classifier_class_weight,
+			classifier_sampling=classifier_sampling,
 			history_output_dir=history_dir if save_training_plots else None,
-			history_prefix=f"top_{feature_percent_tag}" if save_training_plots else None,
+			history_prefix=output_feature_prefix if save_training_plots else None,
 		)
 
 	elapsed_seconds = time.perf_counter() - start_time
@@ -2284,7 +4220,7 @@ def run_binary_experiment(
 		y_pred=filtered_y_pred,
 		y_score=filtered_y_score,
 		output_dir=output_dir,
-		file_prefix=f"top_{feature_percent_tag}",
+		file_prefix=output_feature_prefix,
 	)
 	filtered_classification_metrics = compute_binary_classification_metrics(
 		y_true=y_test_filtered,
@@ -2295,24 +4231,27 @@ def run_binary_experiment(
 		y_true=y_test_filtered,
 		y_pred=filtered_y_pred,
 		output_dir=output_dir,
-		file_prefix=f"top_{feature_percent_tag}",
+		file_prefix=output_feature_prefix,
 	)
 	filtered_precision_recall_path = save_classification_precision_recall_plot(
 		y_true=y_test_filtered,
 		y_score=filtered_y_score,
 		output_dir=output_dir,
-		file_prefix=f"top_{feature_percent_tag}",
+		file_prefix=output_feature_prefix,
 	)
 	filtered_roc_path = save_classification_roc_plot(
 		y_true=y_test_filtered,
 		y_score=filtered_y_score,
 		output_dir=output_dir,
-		file_prefix=f"top_{feature_percent_tag}",
+		file_prefix=output_feature_prefix,
 	)
 	org_metrics_data = {
 		"test_mse": test_mse,
 		"threshold": THRESHOLD,
 		"elapsed_seconds": elapsed_seconds,
+		"classifier_model": classifier_model,
+		"classifier_class_weight": classifier_class_weight,
+		"classifier_sampling": classifier_sampling,
 	}
 	org_metrics_data.update(org_classification_metrics)
 	if org_predictions_path is not None:
@@ -2339,13 +4278,18 @@ def run_binary_experiment(
 		metrics_dir / "ORG_test_metrics.json",
 	)
 
+	filtered_metrics_filename = format_test_metrics_filename(feature_percent, dataset_folder)
 	filtered_metrics_data = {
-		"feature_percent": feature_percent,
+		"feature_percent": output_feature_percent,
 		"selected_feature_count": len(selected_df),
 		"test_mse": filtered_test_mse,
 		"threshold": THRESHOLD,
 		"elapsed_seconds": elapsed_seconds,
+		"classifier_model": classifier_model,
+		"classifier_class_weight": classifier_class_weight,
+		"classifier_sampling": classifier_sampling,
 	}
+	add_encoded_metric_metadata(filtered_metrics_data, feature_percent, dataset_folder)
 	filtered_metrics_data.update(filtered_classification_metrics)
 	if filtered_predictions_path is not None:
 		filtered_metrics_data["classification_predictions_path"] = str(filtered_predictions_path)
@@ -2368,21 +4312,21 @@ def run_binary_experiment(
 
 	save_json(
 		filtered_metrics_data,
-		metrics_dir / f"top_{feature_percent_tag}_test_metrics.json",
+		metrics_dir / filtered_metrics_filename,
 	)
 
 	print("\n[OK] Autoencoder egitimi tamamlandi.")
 	#print(f"[OK] test_mse: {test_mse:.6f}")
 	print(f"[OK] test_accuracy: {test_accuracy:.6f}")
 	#print(f"[OK] Feature weighted listeleri: {weights_path}")
-	print(f"[OK] Top %{feature_percent} secilen feature sayisi: {len(selected_df)}")
+	print(f"[OK] {output_feature_label} secilen feature sayisi: {len(selected_df)}")
 	print(f"[OK] Secilen feature CSV: {selected_features_path}")
 	#print(f"[OK] Filterlenmis dataset CSV: {filtered_dataset_path} (satir: {len(filtered_df)})")
 	#print(f"[OK] Top %{feature_percent} dataset test_mse: {filtered_test_mse:.6f}")
-	print(f"[OK] Top %{feature_percent} dataset test_accuracy: {filtered_test_accuracy:.6f}")
+	print(f"[OK] {output_feature_label} dataset test_accuracy: {filtered_test_accuracy:.6f}")
 	print(f"[OK] Calisma suresi: {elapsed_seconds:.2f} saniye")
-	filtered_metrics_path = metrics_dir / f"top_{feature_percent_tag}_test_metrics.json"
-	print(f"[OK] Top %{feature_percent} metrik dosyasi: {filtered_metrics_path}")
+	filtered_metrics_path = metrics_dir / filtered_metrics_filename
+	print(f"[OK] {output_feature_label} metrik dosyasi: {filtered_metrics_path}")
 	#print(f"[OK] Output klasoru: {output_dir}")
 	#print(f"[OK] Metrik dosyasi: {metrics_dir / 'ORG_test_metrics.json'}")
 	return test_accuracy, filtered_test_accuracy
@@ -2427,6 +4371,28 @@ def run_regression_experiment(
 	X_test_raw = processed["X_test"]
 	y_train = processed["y_train"].to_numpy().astype(np.float32)
 	y_test = processed["y_test"].to_numpy().astype(np.float32)
+	target_normalization_info = None
+	if dataset_folder.lower() == "energy_data":
+		target_min = float(np.min(y_train))
+		target_max = float(np.max(y_train))
+		target_range = target_max - target_min
+		if np.isclose(target_range, 0.0):
+			print("[WARN] Energy target normalization atlandi: train label araligi 0.")
+		else:
+			y_train = ((y_train - target_min) / target_range).astype(np.float32)
+			y_test = ((y_test - target_min) / target_range).astype(np.float32)
+			target_normalization_info = {
+				"method": "min_max",
+				"applied_to": "target",
+				"dataset": dataset_folder,
+				"fit_on": "train_target",
+				"target_min": target_min,
+				"target_max": target_max,
+			}
+			print(
+				"[INFO] Energy target min-max normalize edildi: "
+				f"min={target_min:.6f}, max={target_max:.6f}"
+			)
 
 	print(f"[INFO] Regression modu. X_train shape: {X_train_raw.shape}")
 	print(f"[INFO] X_test shape : {X_test_raw.shape}")
@@ -2581,6 +4547,8 @@ def run_regression_experiment(
 	elapsed_seconds = time.perf_counter() - start_time
 	org_metrics_data = {"task": "regression", **org_metrics}
 	org_metrics_data["elapsed_seconds"] = elapsed_seconds
+	if target_normalization_info is not None:
+		org_metrics_data["target_normalization"] = target_normalization_info
 	if org_prediction_errors_path is not None:
 		org_metrics_data["prediction_errors_path"] = str(org_prediction_errors_path)
 	if org_train_prediction_errors_path is not None:
@@ -2592,6 +4560,8 @@ def run_regression_experiment(
 		"elapsed_seconds": elapsed_seconds,
 		**filtered_metrics,
 	}
+	if target_normalization_info is not None:
+		filtered_metrics_data["target_normalization"] = target_normalization_info
 	if filtered_prediction_errors_path is not None:
 		filtered_metrics_data["prediction_errors_path"] = str(filtered_prediction_errors_path)
 	if filtered_train_prediction_errors_path is not None:
@@ -2622,12 +4592,15 @@ def run_multiclass_one_vs_rest(
 	classifier_hidden_units: tuple[int, ...],
 	classifier_dropout_rates: tuple[float, ...] | None,
 	classifier_learning_rate: float,
+	classifier_model: str,
 	feature_chunk_size: int,
 	classifier_early_stopping_patience: int | None,
 	autoencoder_early_stopping_patience: int | None,
 	classifier_early_stopping_monitor: str,
 	classifier_early_stopping_min_delta: float,
 	autoencoder_early_stopping_min_delta: float,
+	classifier_class_weight: str,
+	classifier_sampling: str,
 	chunk_feature_threshold: int,
 	enable_feature_chunking: bool,
 	save_training_plots: bool = False,
@@ -2663,11 +4636,14 @@ def run_multiclass_one_vs_rest(
 				classifier_hidden_units=classifier_hidden_units,
 				classifier_dropout_rates=classifier_dropout_rates,
 				classifier_learning_rate=classifier_learning_rate,
+				classifier_model=classifier_model,
 				classifier_early_stopping_patience=classifier_early_stopping_patience,
 				autoencoder_early_stopping_patience=autoencoder_early_stopping_patience,
 				classifier_early_stopping_monitor=classifier_early_stopping_monitor,
 				classifier_early_stopping_min_delta=classifier_early_stopping_min_delta,
 				autoencoder_early_stopping_min_delta=autoencoder_early_stopping_min_delta,
+				classifier_class_weight=classifier_class_weight,
+				classifier_sampling=classifier_sampling,
 				feature_chunk_size=feature_chunk_size,
 				chunk_feature_threshold=chunk_feature_threshold,
 				enable_feature_chunking=enable_feature_chunking,
@@ -2676,20 +4652,25 @@ def run_multiclass_one_vs_rest(
 				class_counts=class_counts,
 			)
 
-	feature_percent_tag = format_feature_percent_tag(feature_percent)
-	filtered_metric_filename = f"top_{feature_percent_tag}_test_metrics.json"
-	macro_filtered_accuracy = compute_multiclass_macro_accuracy(
+	output_feature_percent = format_encoded_output_percent(feature_percent, dataset_folder)
+	output_feature_percent_tag = format_feature_percent_tag(output_feature_percent)
+	output_feature_label = format_feature_output_label(feature_percent, dataset_folder)
+	filtered_metric_filename = format_test_metrics_filename(feature_percent, dataset_folder)
+	filtered_summary_metrics = compute_multiclass_one_vs_rest_metric_summary(
 		dataset_folder=dataset_folder,
 		class_labels=class_labels,
 		metric_filename=filtered_metric_filename,
 	)
+	macro_filtered_accuracy = float(filtered_summary_metrics["test_accuracy"])
 	try:
-		macro_org_accuracy = compute_multiclass_macro_accuracy(
+		org_summary_metrics = compute_multiclass_one_vs_rest_metric_summary(
 			dataset_folder=dataset_folder,
 			class_labels=class_labels,
 			metric_filename="ORG_test_metrics.json",
 		)
+		macro_org_accuracy = float(org_summary_metrics["test_accuracy"])
 	except FileNotFoundError:
+		org_summary_metrics = dict(filtered_summary_metrics)
 		macro_org_accuracy = macro_filtered_accuracy
 
 	output_dir = Path("outputs") / "autoencoder" / dataset_folder
@@ -2697,36 +4678,61 @@ def run_multiclass_one_vs_rest(
 	ensure_dir(output_dir)
 	ensure_dir(metrics_dir)
 
+	org_class_metric_rows = org_summary_metrics.pop("class_metric_rows", [])
+	filtered_class_metric_rows = filtered_summary_metrics.pop("class_metric_rows", [])
+	org_class_metrics_path = metrics_dir / "ORG_multiclass_class_metrics.csv"
+	filtered_class_metrics_path = metrics_dir / f"top_{output_feature_percent_tag}_multiclass_class_metrics.csv"
+	if org_class_metric_rows:
+		pd.DataFrame(org_class_metric_rows).to_csv(org_class_metrics_path, index=False)
+	if filtered_class_metric_rows:
+		pd.DataFrame(filtered_class_metric_rows).to_csv(filtered_class_metrics_path, index=False)
+
 	save_json(
 		{
 			"num_classes": len(class_labels),
 			"class_labels": class_labels,
 			"macro_average": True,
-			"test_accuracy": macro_org_accuracy,
+			"class_metrics_path": str(org_class_metrics_path) if org_class_metric_rows else None,
+			**org_summary_metrics,
 		},
 		metrics_dir / "ORG_test_metrics.json",
 	)
 
-	save_json(
-		{
-			"feature_percent": feature_percent,
-			"num_classes": len(class_labels),
-			"class_labels": class_labels,
-			"macro_average": True,
-			"test_accuracy": macro_filtered_accuracy,
-		},
-		metrics_dir / f"top_{feature_percent_tag}_test_metrics.json",
-	)
+	filtered_multiclass_metrics_data = {
+		"feature_percent": output_feature_percent,
+		"num_classes": len(class_labels),
+		"class_labels": class_labels,
+		"macro_average": True,
+		"class_metrics_path": str(filtered_class_metrics_path) if filtered_class_metric_rows else None,
+		**filtered_summary_metrics,
+	}
+	add_encoded_metric_metadata(filtered_multiclass_metrics_data, feature_percent, dataset_folder)
+	save_json(filtered_multiclass_metrics_data, metrics_dir / filtered_metric_filename)
 
 	print("\n[OK] Multi-class one-vs-rest tamamlandi.")
 	print(f"[OK] ORG macro test_accuracy: {macro_org_accuracy:.6f}")
-	print(f"[OK] Top %{feature_percent} macro test_accuracy: {macro_filtered_accuracy:.6f}")
+	if org_summary_metrics.get("test_precision") is not None:
+		print(f"[OK] ORG macro test_precision: {float(org_summary_metrics['test_precision']):.6f}")
+	if org_summary_metrics.get("test_recall") is not None:
+		print(f"[OK] ORG macro test_recall: {float(org_summary_metrics['test_recall']):.6f}")
+	if org_summary_metrics.get("test_f1") is not None:
+		print(f"[OK] ORG macro test_f1: {float(org_summary_metrics['test_f1']):.6f}")
+	print(f"[OK] {output_feature_label} macro test_accuracy: {macro_filtered_accuracy:.6f}")
+	if filtered_summary_metrics.get("test_precision") is not None:
+		print(f"[OK] {output_feature_label} macro test_precision: {float(filtered_summary_metrics['test_precision']):.6f}")
+	if filtered_summary_metrics.get("test_recall") is not None:
+		print(f"[OK] {output_feature_label} macro test_recall: {float(filtered_summary_metrics['test_recall']):.6f}")
+	if filtered_summary_metrics.get("test_f1") is not None:
+		print(f"[OK] {output_feature_label} macro test_f1: {float(filtered_summary_metrics['test_f1']):.6f}")
 	print(f"[OK] Metrik dosyasi: {metrics_dir / 'ORG_test_metrics.json'}")
+	if filtered_class_metric_rows:
+		print(f"[OK] Sinif bazli multiclass metrik CSV: {filtered_class_metrics_path}")
 	return macro_org_accuracy, macro_filtered_accuracy
 
 
 def main(
 	dataset_name: str = "breast_cancer_data.csv",
+	validation_dataset_name: str | None = None,
 	target_column: str = "target",
 	id_column: str | None = "ID",
 	task: str = "classification",
@@ -2737,6 +4743,7 @@ def main(
 	classifier_hidden_units: tuple[int, ...] = DEFAULT_CLASSIFIER_HIDDEN_UNITS,
 	classifier_dropout_rates: tuple[float, ...] | None = None,
 	classifier_learning_rate: float = 0.001,
+	classifier_model: str = DEFAULT_CLASSIFIER_MODEL,
 	regression_model: str = DEFAULT_REGRESSION_MODEL,
 	svr_kernel: str = DEFAULT_SVR_KERNEL,
 	svr_c: float = DEFAULT_SVR_C,
@@ -2753,10 +4760,15 @@ def main(
 	classifier_early_stopping_monitor: str = DEFAULT_CLASSIFIER_EARLY_STOPPING_MONITOR,
 	classifier_early_stopping_min_delta: float = DEFAULT_EARLY_STOPPING_MIN_DELTA,
 	autoencoder_early_stopping_min_delta: float = DEFAULT_AUTOENCODER_EARLY_STOPPING_MIN_DELTA,
+	classifier_class_weight: str = "none",
+	classifier_sampling: str = "none",
+	cluster_k: int | None = None,
 	cluster_min_k: int = DEFAULT_CLUSTER_MIN_K,
 	cluster_max_k: int = DEFAULT_CLUSTER_MAX_K,
 	save_training_plots: bool = False,
 	actual_predicted_top_n: int | None = None,
+	save_encoded_dataset: bool = False,
+	evaluate_dimension_reduction: bool = False,
 ) -> tuple[float, float]:
 	task = task.lower().strip()
 	if task not in {"classification", "clustering", "regression"}:
@@ -2775,6 +4787,71 @@ def main(
 
 	print(f"[INFO] Veri yukleniyor: {dataset_filename}")
 	df = load_data(dataset_filename, folder="raw", target_column=target_column)
+	if save_encoded_dataset:
+		if task != "classification":
+			raise ValueError("--save-encoded-dataset su an classification modu icin destekleniyor.")
+		save_dimension_reduced_classification_dataset(
+			df=df,
+			dataset_folder=dataset_folder,
+			target_column=target_column,
+			id_column=id_column,
+			feature_percent=feature_percent,
+			random_state=random_state,
+			autoencoder_early_stopping_patience=autoencoder_early_stopping_patience,
+			autoencoder_early_stopping_min_delta=autoencoder_early_stopping_min_delta,
+			save_training_plots=save_training_plots,
+		)
+		return 0.0, 0.0
+	if evaluate_dimension_reduction and task != "classification":
+		raise ValueError("--evaluate-dimension-reduction sadece classification modunda kullanilabilir.")
+	if evaluate_dimension_reduction and is_encoded_dataset_folder(dataset_folder):
+		raise ValueError(
+			"Leakage-free evaluation ham dataset ile calismalidir; daha once uretilmis encoded CSV vermeyin."
+		)
+
+	if validation_dataset_name is not None and validation_dataset_name.strip():
+		if task != "classification":
+			raise ValueError("--validation-dataset-name simdilik sadece classification modunda destekleniyor.")
+		validation_dataset_filename = convert_txt_dataset_to_csv(validation_dataset_name)
+		validation_dataset_folder = Path(validation_dataset_filename).stem
+		print(f"[INFO] Validation veri yukleniyor: {validation_dataset_filename}")
+		validation_df = load_data(validation_dataset_filename, folder="raw", target_column=target_column)
+		if is_probable_regression_target(df[target_column]) or is_probable_regression_target(validation_df[target_column]):
+			raise ValueError(
+				"Train/validation classification modu sürekli sayısal target ile calistirilamaz. "
+				"Regression icin ayri akisa gecilmeli."
+			)
+		train_class_count = int(df[target_column].nunique(dropna=True))
+		validation_class_count = int(validation_df[target_column].nunique(dropna=True))
+		if train_class_count > 2 or validation_class_count > 2:
+			raise ValueError("Explicit train/validation modu simdilik sadece binary classification icin kullanilmali.")
+		return run_binary_train_validation_experiment(
+			train_df=df,
+			validation_df=validation_df,
+			dataset_folder=dataset_folder,
+			validation_dataset_folder=validation_dataset_folder,
+			target_column=target_column,
+			id_column=id_column,
+			encoding_dim=encoding_dim,
+			feature_percent=feature_percent,
+			random_state=random_state,
+			classifier_epochs=classifier_epochs,
+			classifier_hidden_units=classifier_hidden_units,
+			classifier_dropout_rates=classifier_dropout_rates,
+			classifier_learning_rate=classifier_learning_rate,
+			classifier_model=classifier_model,
+			classifier_early_stopping_patience=classifier_early_stopping_patience,
+			autoencoder_early_stopping_patience=autoencoder_early_stopping_patience,
+			classifier_early_stopping_monitor=classifier_early_stopping_monitor,
+			classifier_early_stopping_min_delta=classifier_early_stopping_min_delta,
+			autoencoder_early_stopping_min_delta=autoencoder_early_stopping_min_delta,
+			classifier_class_weight=classifier_class_weight,
+			classifier_sampling=classifier_sampling,
+			feature_chunk_size=feature_chunk_size,
+			chunk_feature_threshold=chunk_feature_threshold,
+			enable_feature_chunking=enable_feature_chunking,
+			save_training_plots=save_training_plots,
+		)
 
 	if task == "clustering":
 		return run_clustering_experiment(
@@ -2785,6 +4862,7 @@ def main(
 				encoding_dim=encoding_dim,
 				feature_percent=feature_percent,
 				random_state=random_state,
+				cluster_k=cluster_k,
 				cluster_min_k=cluster_min_k,
 				cluster_max_k=cluster_max_k,
 				feature_chunk_size=feature_chunk_size,
@@ -2826,6 +4904,53 @@ def main(
 			"Bu veri setinin target kolonu sürekli sayısal görünüyor; classification olarak çalıştırılamaz. "
 			"Regression için komutu şu şekilde kullan: --task regression"
 		)
+	if evaluate_dimension_reduction:
+		class_count = int(df[target_column].nunique(dropna=True))
+		if class_count > 2:
+			return run_dimension_reduction_multiclass_one_vs_rest(
+				df=df,
+				dataset_folder=dataset_folder,
+				target_column=target_column,
+				id_column=id_column,
+				encoding_dim=encoding_dim,
+				feature_percent=feature_percent,
+				random_state=random_state,
+				classifier_epochs=classifier_epochs,
+				classifier_hidden_units=classifier_hidden_units,
+				classifier_dropout_rates=classifier_dropout_rates,
+				classifier_learning_rate=classifier_learning_rate,
+				classifier_model=classifier_model,
+				classifier_early_stopping_patience=classifier_early_stopping_patience,
+				autoencoder_early_stopping_patience=autoencoder_early_stopping_patience,
+				classifier_early_stopping_monitor=classifier_early_stopping_monitor,
+				classifier_early_stopping_min_delta=classifier_early_stopping_min_delta,
+				autoencoder_early_stopping_min_delta=autoencoder_early_stopping_min_delta,
+				classifier_class_weight=classifier_class_weight,
+				classifier_sampling=classifier_sampling,
+				save_training_plots=save_training_plots,
+			)
+		return run_dimension_reduction_classification_experiment(
+			df=df,
+			dataset_folder=dataset_folder,
+			target_column=target_column,
+			id_column=id_column,
+			encoding_dim=encoding_dim,
+			feature_percent=feature_percent,
+			random_state=random_state,
+			classifier_epochs=classifier_epochs,
+			classifier_hidden_units=classifier_hidden_units,
+			classifier_dropout_rates=classifier_dropout_rates,
+			classifier_learning_rate=classifier_learning_rate,
+			classifier_model=classifier_model,
+			classifier_early_stopping_patience=classifier_early_stopping_patience,
+			autoencoder_early_stopping_patience=autoencoder_early_stopping_patience,
+			classifier_early_stopping_monitor=classifier_early_stopping_monitor,
+			classifier_early_stopping_min_delta=classifier_early_stopping_min_delta,
+			autoencoder_early_stopping_min_delta=autoencoder_early_stopping_min_delta,
+			classifier_class_weight=classifier_class_weight,
+			classifier_sampling=classifier_sampling,
+			save_training_plots=save_training_plots,
+		)
 
 	class_count = int(df[target_column].nunique(dropna=True))
 	if class_count > 2:
@@ -2841,11 +4966,14 @@ def main(
 			classifier_hidden_units=classifier_hidden_units,
 			classifier_dropout_rates=classifier_dropout_rates,
 			classifier_learning_rate=classifier_learning_rate,
+			classifier_model=classifier_model,
 			classifier_early_stopping_patience=classifier_early_stopping_patience,
 			autoencoder_early_stopping_patience=autoencoder_early_stopping_patience,
 			classifier_early_stopping_monitor=classifier_early_stopping_monitor,
 			classifier_early_stopping_min_delta=classifier_early_stopping_min_delta,
 			autoencoder_early_stopping_min_delta=autoencoder_early_stopping_min_delta,
+			classifier_class_weight=classifier_class_weight,
+			classifier_sampling=classifier_sampling,
 			feature_chunk_size=feature_chunk_size,
 			chunk_feature_threshold=chunk_feature_threshold,
 			enable_feature_chunking=enable_feature_chunking,
@@ -2864,11 +4992,14 @@ def main(
 		classifier_hidden_units=classifier_hidden_units,
 		classifier_dropout_rates=classifier_dropout_rates,
 		classifier_learning_rate=classifier_learning_rate,
+		classifier_model=classifier_model,
 		classifier_early_stopping_patience=classifier_early_stopping_patience,
 		autoencoder_early_stopping_patience=autoencoder_early_stopping_patience,
 		classifier_early_stopping_monitor=classifier_early_stopping_monitor,
 		classifier_early_stopping_min_delta=classifier_early_stopping_min_delta,
 		autoencoder_early_stopping_min_delta=autoencoder_early_stopping_min_delta,
+		classifier_class_weight=classifier_class_weight,
+		classifier_sampling=classifier_sampling,
 		feature_chunk_size=feature_chunk_size,
 		chunk_feature_threshold=chunk_feature_threshold,
 		enable_feature_chunking=enable_feature_chunking,
@@ -2878,6 +5009,7 @@ def main(
 
 def run_repeated_experiments(
 	dataset_name: str,
+	validation_dataset_name: str | None,
 	target_column: str,
 	id_column: str,
 	task: str,
@@ -2888,6 +5020,7 @@ def run_repeated_experiments(
 	classifier_hidden_units: tuple[int, ...],
 	classifier_dropout_rates: tuple[float, ...] | None,
 	classifier_learning_rate: float,
+	classifier_model: str,
 	regression_model: str,
 	svr_kernel: str,
 	svr_c: float,
@@ -2904,10 +5037,14 @@ def run_repeated_experiments(
 	classifier_early_stopping_monitor: str,
 	classifier_early_stopping_min_delta: float,
 	autoencoder_early_stopping_min_delta: float,
+	classifier_class_weight: str,
+	classifier_sampling: str,
+	cluster_k: int | None,
 	cluster_min_k: int,
 	cluster_max_k: int,
 	save_training_plots: bool,
 	actual_predicted_top_n: int | None,
+	evaluate_dimension_reduction: bool,
 	repeat_runs: int,
 	accuracy_txt_path: Path,
 	metric_name: str = "Accuracy",
@@ -2918,27 +5055,41 @@ def run_repeated_experiments(
 	"""
 	accuracy_values: list[float] = []
 	run_durations: list[float] = []
+	classification_run_rows: list[dict] = []
 	regression_run_rows: list[dict] = []
+	clustering_run_rows: list[dict] = []
 	history_frames: list[pd.DataFrame] = []
 	dataset_folder = Path(convert_txt_dataset_to_csv(dataset_name)).stem
-	feature_percent_tag = format_feature_percent_tag(feature_percent)
+	result_dataset_folder = dataset_folder
+	result_feature_percent = feature_percent
+	feature_percent_tag = format_feature_percent_tag(result_feature_percent)
+	metric_output_prefix = format_metric_output_prefix(result_feature_percent, result_dataset_folder)
+	if evaluate_dimension_reduction:
+		metric_output_prefix = f"top_{feature_percent_tag}_dimension_reduction"
 	lower_is_better = metric_name in {"Cluster_RMSE"}
 
 	for run_idx in range(1, repeat_runs + 1):
+		run_random_state = random_state
+		if random_state is not None and repeat_runs > 1:
+			run_random_state = int(random_state) + run_idx - 1
 		print(f"\n[INFO] Calisma {run_idx}/{repeat_runs} basladi.")
+		if repeat_runs > 1:
+			print(f"[INFO] Bu calismanin split seed degeri: {run_random_state}")
 		run_start_time = time.perf_counter()
 		_, filtered_test_accuracy = main(
 			dataset_name=dataset_name,
+			validation_dataset_name=validation_dataset_name,
 			target_column=target_column,
 			id_column=id_column,
 			task=task,
 			encoding_dim=encoding_dim,
 			feature_percent=feature_percent,
-			random_state=random_state,
+			random_state=run_random_state,
 			classifier_epochs=classifier_epochs,
 			classifier_hidden_units=classifier_hidden_units,
 			classifier_dropout_rates=classifier_dropout_rates,
 			classifier_learning_rate=classifier_learning_rate,
+			classifier_model=classifier_model,
 			regression_model=regression_model,
 			svr_kernel=svr_kernel,
 			svr_c=svr_c,
@@ -2955,15 +5106,64 @@ def run_repeated_experiments(
 			classifier_early_stopping_monitor=classifier_early_stopping_monitor,
 			classifier_early_stopping_min_delta=classifier_early_stopping_min_delta,
 			autoencoder_early_stopping_min_delta=autoencoder_early_stopping_min_delta,
+			classifier_class_weight=classifier_class_weight,
+			classifier_sampling=classifier_sampling,
+			cluster_k=cluster_k,
 			cluster_min_k=cluster_min_k,
 			cluster_max_k=cluster_max_k,
 			save_training_plots=save_training_plots,
 			actual_predicted_top_n=actual_predicted_top_n,
+			evaluate_dimension_reduction=evaluate_dimension_reduction,
 		)
 		run_elapsed_seconds = time.perf_counter() - run_start_time
 		run_durations.append(run_elapsed_seconds)
 		print(f"[OK] Calisma {run_idx}/{repeat_runs} suresi: {run_elapsed_seconds:.2f} saniye")
 		accuracy_values.append(float(filtered_test_accuracy))
+		if task == "classification":
+			classification_metrics_filename = format_test_metrics_filename(
+				result_feature_percent,
+				result_dataset_folder,
+			)
+			if evaluate_dimension_reduction:
+				classification_metrics_filename = f"{metric_output_prefix}_test_metrics.json"
+			classification_metrics_path = (
+				Path("outputs")
+				/ "autoencoder"
+				/ result_dataset_folder
+				/ "metrics"
+				/ classification_metrics_filename
+			)
+			if classification_metrics_path.exists():
+				with open(classification_metrics_path, "r", encoding="utf-8") as f:
+					classification_metrics = json.load(f)
+				classification_run_rows.append(
+					{
+						"run": run_idx,
+						"feature_percent": classification_metrics.get(
+							"feature_percent",
+							format_encoded_output_percent(feature_percent, result_dataset_folder),
+						),
+						"selected_feature_count": classification_metrics.get("selected_feature_count"),
+						"test_accuracy": classification_metrics.get("test_accuracy", filtered_test_accuracy),
+						"test_precision": classification_metrics.get("test_precision"),
+						"test_recall": classification_metrics.get("test_recall"),
+						"test_f1": classification_metrics.get("test_f1"),
+						"average_precision": classification_metrics.get("average_precision"),
+						"roc_auc": classification_metrics.get("roc_auc"),
+						"classifier_model": classification_metrics.get("classifier_model", classifier_model),
+						"classifier_class_weight": classification_metrics.get("classifier_class_weight", classifier_class_weight),
+						"classifier_sampling": classification_metrics.get("classifier_sampling", classifier_sampling),
+						"split_seed": classification_metrics.get("split_seed", run_random_state),
+						"method": classification_metrics.get(
+							"method",
+							"DimensionReduction" if evaluate_dimension_reduction else "FeatureRank",
+						),
+						"encoded_dataset": classification_metrics.get("encoded_dataset", False),
+						"encoded_source_feature_percent": classification_metrics.get("encoded_source_feature_percent"),
+						"encoded_active_feature_percent": classification_metrics.get("encoded_active_feature_percent"),
+						"elapsed_seconds": run_elapsed_seconds,
+					}
+				)
 		if task == "regression":
 			regression_metrics_path = (
 				Path("outputs")
@@ -2994,6 +5194,31 @@ def run_repeated_experiments(
 						"elapsed_seconds": run_elapsed_seconds,
 					}
 				)
+		if task == "clustering":
+			clustering_metrics_path = (
+				Path("outputs")
+				/ "clustering"
+				/ dataset_folder
+				/ "metrics"
+				/ f"top_{feature_percent_tag}_cluster_metrics.json"
+			)
+			if clustering_metrics_path.exists():
+				with open(clustering_metrics_path, "r", encoding="utf-8") as f:
+					clustering_metrics = json.load(f)
+				clustering_run_rows.append(
+					{
+						"run": run_idx,
+						"method": "FeatureRank",
+						"feature_percent": feature_percent,
+						"selected_feature_count": clustering_metrics.get("selected_feature_count"),
+						"best_k": clustering_metrics.get("best_k"),
+						"fixed_cluster_k": clustering_metrics.get("fixed_cluster_k"),
+						"silhouette_score": clustering_metrics.get("silhouette_score"),
+						"cluster_rmse": clustering_metrics.get("cluster_rmse"),
+						"inertia": clustering_metrics.get("inertia"),
+						"elapsed_seconds": run_elapsed_seconds,
+					}
+				)
 		if save_training_plots and task in {"classification", "regression"}:
 			history_df = collect_repeated_run_history(
 				dataset_folder=dataset_folder,
@@ -3009,7 +5234,30 @@ def run_repeated_experiments(
 			if history_df is not None:
 				history_frames.append(history_df)
 		sorted_accuracy_values = sorted(accuracy_values, reverse=not lower_is_better)
+		classification_metric_text = ""
 		regression_error_text = ""
+		clustering_silhouette_text = ""
+		if task == "classification" and classification_run_rows:
+			precision_values = [
+				float(row["test_precision"])
+				for row in classification_run_rows
+				if row.get("test_precision") is not None and not pd.isna(row.get("test_precision"))
+			]
+			recall_values = [
+				float(row["test_recall"])
+				for row in classification_run_rows
+				if row.get("test_recall") is not None and not pd.isna(row.get("test_recall"))
+			]
+			f1_values = [
+				float(row["test_f1"])
+				for row in classification_run_rows
+				if row.get("test_f1") is not None and not pd.isna(row.get("test_f1"))
+			]
+			classification_metric_text = (
+				f"\nPrecision listesi: {precision_values}\n"
+				f"Recall listesi: {recall_values}\n"
+				f"F1 listesi: {f1_values}"
+			)
 		if task == "regression" and regression_run_rows:
 			mse_values = [
 				float(row["regression_mse"])
@@ -3027,9 +5275,21 @@ def run_repeated_experiments(
 				f"RMSE listesi: {rmse_values}\n"
 				f"Sirali RMSE (dusuk iyi): {sorted(rmse_values)}"
 			)
+		if task == "clustering" and clustering_run_rows:
+			silhouette_values = [
+				float(row["silhouette_score"])
+				for row in clustering_run_rows
+				if row.get("silhouette_score") is not None and not pd.isna(row.get("silhouette_score"))
+			]
+			clustering_silhouette_text = (
+				f"\nSilhouette listesi: {silhouette_values}\n"
+				f"Sirali Silhouette (yuksek iyi): {sorted(silhouette_values, reverse=True)}"
+			)
 		accuracy_txt_path.write_text(
 			f"{accuracy_values}\nSirali {metric_name}: {sorted_accuracy_values}"
+			f"{classification_metric_text}"
 			f"{regression_error_text}\n"
+			f"{clustering_silhouette_text}\n"
 			f"Run sureleri saniye: {[round(value, 3) for value in run_durations]}",
 			encoding="utf-8",
 		)
@@ -3039,7 +5299,45 @@ def run_repeated_experiments(
 	average_duration = sum(run_durations) / len(run_durations) if run_durations else 0.0
 	std_duration = float(np.std(run_durations, ddof=1)) if len(run_durations) > 1 else 0.0
 	sorted_accuracy_values = sorted(accuracy_values, reverse=not lower_is_better)
+	classification_metric_text = ""
 	regression_error_text = ""
+	clustering_silhouette_text = ""
+	if task == "classification" and classification_run_rows:
+		precision_values = [
+			float(row["test_precision"])
+			for row in classification_run_rows
+			if row.get("test_precision") is not None and not pd.isna(row.get("test_precision"))
+		]
+		recall_values = [
+			float(row["test_recall"])
+			for row in classification_run_rows
+			if row.get("test_recall") is not None and not pd.isna(row.get("test_recall"))
+		]
+		f1_values = [
+			float(row["test_f1"])
+			for row in classification_run_rows
+			if row.get("test_f1") is not None and not pd.isna(row.get("test_f1"))
+		]
+		precision_mean = float(np.mean(precision_values)) if precision_values else float("nan")
+		precision_std = float(np.std(precision_values, ddof=1)) if len(precision_values) > 1 else 0.0
+		recall_mean = float(np.mean(recall_values)) if recall_values else float("nan")
+		recall_std = float(np.std(recall_values, ddof=1)) if len(recall_values) > 1 else 0.0
+		f1_mean = float(np.mean(f1_values)) if f1_values else float("nan")
+		f1_std = float(np.std(f1_values, ddof=1)) if len(f1_values) > 1 else 0.0
+		classification_metric_text = (
+			f"Precision listesi: {precision_values}\n"
+			f"Sirali Precision (yuksek iyi): {sorted(precision_values, reverse=True)}\n"
+			f"Ortalama Precision: {precision_mean:.6f}\n"
+			f"Std Precision: {precision_std:.6f}\n"
+			f"Recall listesi: {recall_values}\n"
+			f"Sirali Recall (yuksek iyi): {sorted(recall_values, reverse=True)}\n"
+			f"Ortalama Recall: {recall_mean:.6f}\n"
+			f"Std Recall: {recall_std:.6f}\n"
+			f"F1 listesi: {f1_values}\n"
+			f"Sirali F1 (yuksek iyi): {sorted(f1_values, reverse=True)}\n"
+			f"Ortalama F1: {f1_mean:.6f}\n"
+			f"Std F1: {f1_std:.6f}\n"
+		)
 	if task == "regression" and regression_run_rows:
 		mse_values = [
 			float(row["regression_mse"])
@@ -3076,12 +5374,33 @@ def run_repeated_experiments(
 			f"Ortalama Correlation: {correlation_mean:.6f}\n"
 			f"Std Correlation: {correlation_std:.6f}\n"
 		)
+	if task == "clustering" and clustering_run_rows:
+		silhouette_values = [
+			float(row["silhouette_score"])
+			for row in clustering_run_rows
+			if row.get("silhouette_score") is not None and not pd.isna(row.get("silhouette_score"))
+		]
+		silhouette_mean = float(np.mean(silhouette_values)) if silhouette_values else float("nan")
+		silhouette_std = float(np.std(silhouette_values, ddof=1)) if len(silhouette_values) > 1 else 0.0
+		silhouette_ci_half_width = (
+			float(1.96 * silhouette_std / np.sqrt(len(silhouette_values))) if len(silhouette_values) > 1 else 0.0
+		)
+		clustering_silhouette_text = (
+			f"Silhouette listesi: {silhouette_values}\n"
+			f"Sirali Silhouette (yuksek iyi): {sorted(silhouette_values, reverse=True)}\n"
+			f"Ortalama Silhouette: {silhouette_mean:.6f}\n"
+			f"Std Silhouette: {silhouette_std:.6f}\n"
+			f"95% CI Silhouette: [{silhouette_mean - silhouette_ci_half_width:.6f}, "
+			f"{silhouette_mean + silhouette_ci_half_width:.6f}]\n"
+		)
 	output_text = (
 		f"{accuracy_values}\n"
 		f"Sirali {metric_name}: {sorted_accuracy_values}\n"
 		f"Ortalama {metric_name}: {average_accuracy:.6f}\n"
 		f"Std {metric_name}: {std_accuracy:.6f}\n"
+		f"{classification_metric_text}"
 		f"{regression_error_text}"
+		f"{clustering_silhouette_text}"
 		f"Run sureleri saniye: {[round(value, 3) for value in run_durations]}\n"
 		f"Ortalama sure saniye: {average_duration:.3f}\n"
 		f"Std sure saniye: {std_duration:.3f}"
@@ -3089,27 +5408,118 @@ def run_repeated_experiments(
 	accuracy_txt_path.write_text(output_text, encoding="utf-8")
 
 	if task == "clustering":
-		plot_output_dir = Path("outputs") / "clustering" / dataset_folder / "metrics"
+		plot_output_dir = Path("outputs") / "clustering" / result_dataset_folder / "metrics"
 		boxplot_metric_name = "Cluster_RMSE"
 	elif task == "regression":
-		plot_output_dir = Path("outputs") / "autoencoder" / dataset_folder / "metrics"
+		plot_output_dir = Path("outputs") / "autoencoder" / result_dataset_folder / "metrics"
 	else:
-		plot_output_dir = Path("outputs") / "autoencoder" / dataset_folder / "metrics"
+		plot_output_dir = Path("outputs") / "autoencoder" / result_dataset_folder / "metrics"
 		boxplot_metric_name = "Accuracy"
 	if task != "regression":
 		save_metric_boxplot(
 			metric_values=accuracy_values,
 			output_dir=plot_output_dir,
-			file_prefix=f"top_{feature_percent_tag}",
+			file_prefix=metric_output_prefix,
 			metric_name=boxplot_metric_name,
 			normalize_to_unit=boxplot_metric_name == "Cluster_RMSE",
 		)
 		save_repeated_metric_distribution_plot(
 			metric_values=accuracy_values,
 			output_dir=plot_output_dir,
-			file_prefix=f"top_{feature_percent_tag}",
+			file_prefix=metric_output_prefix,
 			metric_name=boxplot_metric_name,
 		)
+
+	if task == "classification" and classification_run_rows:
+		classification_runs_df = pd.DataFrame(classification_run_rows)
+		classification_runs_path = plot_output_dir / f"{metric_output_prefix}_classification_runs.csv"
+		classification_runs_df.to_csv(classification_runs_path, index=False)
+
+		def summarize_metric(column_name: str) -> tuple[float, float]:
+			values = classification_runs_df[column_name].dropna().astype(float).to_numpy()
+			mean_value = float(np.mean(values)) if len(values) else float("nan")
+			std_value = float(np.std(values, ddof=1)) if len(values) > 1 else 0.0
+			return mean_value, std_value
+
+		accuracy_mean, accuracy_std = summarize_metric("test_accuracy")
+		precision_mean, precision_std = summarize_metric("test_precision")
+		recall_mean, recall_std = summarize_metric("test_recall")
+		f1_mean, f1_std = summarize_metric("test_f1")
+		selected_feature_counts = classification_runs_df["selected_feature_count"].dropna().astype(int)
+		classification_table_summary = {
+			"Dataset": dataset_folder,
+			"Method": "DimensionReduction" if evaluate_dimension_reduction else "FeatureRank",
+			"Feature_Percent": feature_percent,
+			"NOF": int(selected_feature_counts.iloc[0]) if not selected_feature_counts.empty else None,
+			"Average_Accuracy": accuracy_mean,
+			"Accuracy_STD": accuracy_std,
+			"Average_Precision": precision_mean,
+			"Precision_STD": precision_std,
+			"Average_Recall": recall_mean,
+			"Recall_STD": recall_std,
+			"Average_F1": f1_mean,
+			"F1_STD": f1_std,
+			"Accuracy_pm_STD": f"{accuracy_mean:.6f} ± {accuracy_std:.6f}",
+			"Precision_pm_STD": f"{precision_mean:.6f} ± {precision_std:.6f}",
+			"Recall_pm_STD": f"{recall_mean:.6f} ± {recall_std:.6f}",
+			"F1_pm_STD": f"{f1_mean:.6f} ± {f1_std:.6f}",
+			"repeat_runs": int(len(classification_runs_df)),
+			"runs_csv_path": str(classification_runs_path),
+		}
+		classification_summary_csv_path = plot_output_dir / f"{metric_output_prefix}_classification_table_summary.csv"
+		classification_summary_json_path = plot_output_dir / f"{metric_output_prefix}_classification_table_summary.json"
+		pd.DataFrame([classification_table_summary]).to_csv(classification_summary_csv_path, index=False)
+		save_json(classification_table_summary, classification_summary_json_path)
+		print(f"[OK] Classification run CSV: {classification_runs_path}")
+		print(f"[OK] Classification tablo ozeti CSV: {classification_summary_csv_path}")
+
+	if task == "clustering" and clustering_run_rows:
+		clustering_runs_df = pd.DataFrame(clustering_run_rows)
+		clustering_runs_path = plot_output_dir / f"top_{feature_percent_tag}_clustering_runs.csv"
+		clustering_runs_df.to_csv(clustering_runs_path, index=False)
+
+		silhouette_values = clustering_runs_df["silhouette_score"].dropna().astype(float).to_numpy()
+		selected_feature_counts = clustering_runs_df["selected_feature_count"].dropna().astype(int)
+		best_k_values = clustering_runs_df["best_k"].dropna().astype(int)
+		n_silhouette_runs = int(len(silhouette_values))
+		silhouette_mean = float(np.mean(silhouette_values)) if n_silhouette_runs else float("nan")
+		silhouette_std = float(np.std(silhouette_values, ddof=1)) if n_silhouette_runs > 1 else 0.0
+		silhouette_ci_half_width = (
+			float(1.96 * silhouette_std / np.sqrt(n_silhouette_runs)) if n_silhouette_runs > 1 else 0.0
+		)
+		if n_silhouette_runs > 0:
+			save_metric_boxplot(
+				metric_values=silhouette_values.tolist(),
+				output_dir=plot_output_dir,
+				file_prefix=f"top_{feature_percent_tag}",
+				metric_name="Silhouette",
+			)
+			save_repeated_metric_distribution_plot(
+				metric_values=silhouette_values.tolist(),
+				output_dir=plot_output_dir,
+				file_prefix=f"top_{feature_percent_tag}",
+				metric_name="Silhouette",
+			)
+		clustering_table_summary = {
+			"Dataset": dataset_folder,
+			"Method": "FeatureRank",
+			"Feature_Percent": feature_percent,
+			"NOF": int(selected_feature_counts.iloc[0]) if not selected_feature_counts.empty else None,
+			"Best_K_Mode": int(best_k_values.mode().iloc[0]) if not best_k_values.empty else None,
+			"Average_Silhouette": silhouette_mean,
+			"Silhouette_STD": silhouette_std,
+			"Silhouette_CI_1": silhouette_mean - silhouette_ci_half_width,
+			"Silhouette_CI_2": silhouette_mean + silhouette_ci_half_width,
+			"Average_Silhouette_pm_STD": f"{silhouette_mean:.6f} ± {silhouette_std:.6f}",
+			"repeat_runs": n_silhouette_runs,
+			"runs_csv_path": str(clustering_runs_path),
+		}
+		clustering_summary_csv_path = plot_output_dir / f"top_{feature_percent_tag}_clustering_table_summary.csv"
+		clustering_summary_json_path = plot_output_dir / f"top_{feature_percent_tag}_clustering_table_summary.json"
+		pd.DataFrame([clustering_table_summary]).to_csv(clustering_summary_csv_path, index=False)
+		save_json(clustering_table_summary, clustering_summary_json_path)
+		print(f"[OK] Clustering run CSV: {clustering_runs_path}")
+		print(f"[OK] Clustering silhouette tablo ozeti CSV: {clustering_summary_csv_path}")
 
 	if task == "regression" and regression_run_rows:
 		regression_runs_df = pd.DataFrame(regression_run_rows)
@@ -3191,11 +5601,17 @@ def run_repeated_experiments(
 if __name__ == "__main__":
 	parser = argparse.ArgumentParser(description="Basit autoencoder egitimi")
 	parser.add_argument("--dataset-name", type=str, default="breast_cancer_data.csv", help="Raw data dosyasi (.csv veya .txt)")
+	parser.add_argument("--validation-dataset-name", type=str, default="", help="Ayrı validation raw data dosyasi. Verilirse dataset-name train, bu dosya validation olarak kullanilir")
 	parser.add_argument("--target-column", type=str, default="target", help="Hedef kolon adi")
 	parser.add_argument("--id-column", type=str, default="ID", help="ID kolon adi, kullanmak istemezsen 'none' ver")
 	parser.add_argument("--task", type=str, default="classification", choices=["classification", "clustering", "regression"], help="Calisma modu")
-	parser.add_argument("--encoding-dim", type=int, default=8, help="Encoding boyutu")
-	parser.add_argument("--feature-percent", type=float, default=20.0, help="Secilecek feature yuzdesi")
+	parser.add_argument("--encoding-dim", type=int, default=8, help="Normal FeatureRank autoencoder encoding boyutu. --save-encoded-dataset modunda latent boyut feature-percent ile hesaplanir")
+	parser.add_argument(
+		"--feature-percent",
+		type=str,
+		default="20.0",
+		help="Secilecek feature yuzdesi. Ornek: 20, 10,20,30 veya all (10-100 arasi 10'arli)",
+	)
 	parser.add_argument("--random-state", type=str, default=str(RANDOM_STATE), help="Random state. Ornek: 42 veya none")
 	parser.add_argument("--repeat-runs", type=int, default=1, help="Ayni deneyi kac kez calistiracagi")
 	parser.add_argument("--accuracy-list-txt", type=str, default="", help="Accuracy listesi txt cikti yolu (bos ise varsayilan yol kullanilir)")
@@ -3203,6 +5619,7 @@ if __name__ == "__main__":
 	parser.add_argument("--classifier-hidden-units", type=str, default="32,16", help="Classifier gizli katman nöronlari. Ornek: 128,64")
 	parser.add_argument("--classifier-dropout-rates", type=str, default="", help="Classifier dropout oranlari. Ornek: 0.3,0.2")
 	parser.add_argument("--classifier-learning-rate", type=float, default=0.001, help="Classifier ogrenme orani")
+	parser.add_argument("--classifier-model", type=str, default=DEFAULT_CLASSIFIER_MODEL, choices=["neural", "logistic", "svm", "random_forest"], help="Classification modeli: neural, logistic, svm veya random_forest")
 	parser.add_argument("--regression-model", type=str, default=DEFAULT_REGRESSION_MODEL, choices=["neural", "svr", "kmeans"], help="Regression tahmin modeli: neural, svr veya kmeans")
 	parser.add_argument("--svr-kernel", type=str, default=DEFAULT_SVR_KERNEL, choices=["linear", "poly", "rbf", "sigmoid"], help="SVR kernel tipi")
 	parser.add_argument("--svr-c", type=float, default=DEFAULT_SVR_C, help="SVR C regularization parametresi")
@@ -3215,6 +5632,8 @@ if __name__ == "__main__":
 	parser.add_argument("--classifier-early-stopping-monitor", type=str, default=DEFAULT_CLASSIFIER_EARLY_STOPPING_MONITOR, choices=["val_loss", "val_accuracy"], help="Classifier early stopping metriği")
 	parser.add_argument("--classifier-early-stopping-min-delta", type=float, default=DEFAULT_EARLY_STOPPING_MIN_DELTA, help="Classifier icin minimum validation metric iyilesmesi. Daha kucuk iyilesmeler plato sayilir")
 	parser.add_argument("--autoencoder-early-stopping-min-delta", type=float, default=DEFAULT_AUTOENCODER_EARLY_STOPPING_MIN_DELTA, help="Autoencoder icin minimum val_loss iyilesmesi. Daha kucuk iyilesmeler plato sayilir")
+	parser.add_argument("--classifier-class-weight", type=str, default="none", choices=["none", "balanced"], help="Binary classification icin class_weight kullanimi. Dengesiz veri icin balanced verilebilir")
+	parser.add_argument("--classifier-sampling", type=str, default="none", choices=["none", "undersample"], help="Binary classification icin train verisinde sampling. undersample: cogunluk sinifini azinlik sinifi sayisina indirir")
 	parser.add_argument("--device", type=str, default="auto", choices=["auto", "gpu", "cpu"], help="Cihaz secimi: auto, gpu veya cpu")
 	parser.add_argument("--feature-chunk-size", type=int, default=DEFAULT_FEATURE_CHUNK_SIZE, help="Buyuk feature setlerinde her parcadaki feature sayisi")
 	parser.add_argument("--chunk-feature-threshold", type=int, default=DEFAULT_CHUNK_FEATURE_THRESHOLD, help="Feature sayisi bu esigi asarsa parcali akis kullanilir")
@@ -3223,10 +5642,35 @@ if __name__ == "__main__":
 	parser.add_argument("--cluster-min-k", type=int, default=DEFAULT_CLUSTER_MIN_K, help="Clustering icin denenecek minimum k")
 	parser.add_argument("--cluster-max-k", type=int, default=DEFAULT_CLUSTER_MAX_K, help="Clustering icin denenecek maksimum k")
 	parser.add_argument("--save-training-plots", action="store_true", help="Classification egitim history CSV ve PNG grafiklerini kaydeder")
+	parser.add_argument(
+		"--save-encoded-dataset",
+		action="store_true",
+		help=(
+			"Dimension reduction CSV'lerini disari aktarir. Bu CSV yeniden split edilerek makale performansi "
+			"olculmemeli; performans icin --evaluate-dimension-reduction kullanilmalidir"
+		),
+	)
+	parser.add_argument(
+		"--evaluate-dimension-reduction",
+		action="store_true",
+		help=(
+			"Ham dataset uzerinde leakage-free dimension reduction classification yapar: "
+			"scaler/autoencoder sadece outer train ile fit edilir, test ayri encode edilip degerlendirilir"
+		),
+	)
 	parser.add_argument("--actual-predicted-top-n", type=int, default=None, help="Regression actual-vs-predicted grafiginde en yuksek actual degerli N ornegi gosterir. Bos birakilirsa tum test ornekleri siralanir")
 
 
 	args = parser.parse_args()
+	if args.save_encoded_dataset and args.evaluate_dimension_reduction:
+		raise ValueError(
+			"--save-encoded-dataset ve --evaluate-dimension-reduction ayni komutta kullanilamaz. "
+			"Ilki CSV uretir, ikincisi leakage-free performans olcer."
+		)
+	feature_percent_values = parse_feature_percent_values(args.feature_percent)
+	if args.save_encoded_dataset and args.feature_percent == parser.get_default("feature_percent"):
+		feature_percent_values = [float(value) for value in range(10, 101, 10)]
+		print("[INFO] --save-encoded-dataset icin feature-percent verilmedi; %10-%100 arasi otomatik calisacak.")
 	random_state = parse_random_state(args.random_state)
 	svr_gamma = parse_svr_gamma(args.svr_gamma)
 	classifier_hidden_units = parse_hidden_units(args.classifier_hidden_units)
@@ -3241,25 +5685,14 @@ if __name__ == "__main__":
 
 	cluster_min_k = args.cluster_min_k
 	cluster_max_k = args.cluster_max_k
+	cluster_k = args.cluster_k
 	if args.cluster_k is not None:
 		if args.cluster_k < 2:
 			raise ValueError("--cluster-k en az 2 olmali.")
-		cluster_min_k = args.cluster_k
-		cluster_max_k = args.cluster_k
-		print(f"[INFO] Sabit cluster k kullaniliyor: k={args.cluster_k}")
-
-	if args.accuracy_list_txt.strip():
-		accuracy_txt_path = Path(args.accuracy_list_txt)
-	else:
-		dataset_folder = Path(args.dataset_name).stem
-		feature_percent_tag = format_feature_percent_tag(args.feature_percent)
-		if args.task == "clustering":
-			accuracy_txt_path = Path("outputs") / "clustering" / dataset_folder / "metrics" / f"top_{feature_percent_tag}_cluster_rmse_runs.txt"
-		elif args.task == "regression":
-			accuracy_txt_path = Path("outputs") / "autoencoder" / dataset_folder / "metrics" / f"top_{feature_percent_tag}_pearson_r_runs.txt"
-		else:
-			accuracy_txt_path = Path("outputs") / "autoencoder" / dataset_folder / "metrics" / f"top_{feature_percent_tag}_accuracy_runs.txt"
-	ensure_dir(accuracy_txt_path.parent)
+		print(
+			f"[INFO] Sabit cluster k kullaniliyor: k={args.cluster_k}. "
+			f"Grafikler k={cluster_min_k}-{cluster_max_k} araliginda olusturulacak."
+		)
 
 	if args.task == "clustering":
 		metric_name = "Cluster_RMSE"
@@ -3267,43 +5700,127 @@ if __name__ == "__main__":
 		metric_name = "Pearson_r"
 	else:
 		metric_name = "Accuracy"
-	accuracy_values, average_accuracy = run_repeated_experiments(
-		dataset_name=args.dataset_name,
-		target_column=args.target_column,
-		id_column=args.id_column,
-		task=args.task,
-		encoding_dim=args.encoding_dim,
-		feature_percent=args.feature_percent,
-		random_state=random_state,
-		classifier_epochs=args.classifier_epochs,
-		classifier_hidden_units=classifier_hidden_units,
-		classifier_dropout_rates=classifier_dropout_rates,
-		classifier_learning_rate=args.classifier_learning_rate,
-		regression_model=args.regression_model,
-		svr_kernel=args.svr_kernel,
-		svr_c=args.svr_c,
-		svr_epsilon=args.svr_epsilon,
-		svr_gamma=svr_gamma,
-		kmeans_regression_clusters=args.kmeans_regression_clusters,
-		kmeans_regression_n_init=args.kmeans_regression_n_init,
-		device=args.device,
-		feature_chunk_size=args.feature_chunk_size,
-		chunk_feature_threshold=args.chunk_feature_threshold,
-		enable_feature_chunking=not args.disable_feature_chunking,
-		classifier_early_stopping_patience=args.classifier_early_stopping_patience if args.classifier_early_stopping_patience > 0 else None,
-		autoencoder_early_stopping_patience=autoencoder_early_stopping_patience if autoencoder_early_stopping_patience > 0 else None,
-		classifier_early_stopping_monitor=args.classifier_early_stopping_monitor,
-		classifier_early_stopping_min_delta=args.classifier_early_stopping_min_delta,
-		autoencoder_early_stopping_min_delta=args.autoencoder_early_stopping_min_delta,
-		cluster_min_k=cluster_min_k,
-		cluster_max_k=cluster_max_k,
-		save_training_plots=args.save_training_plots,
-		actual_predicted_top_n=args.actual_predicted_top_n,
-		repeat_runs=args.repeat_runs,
-		accuracy_txt_path=accuracy_txt_path,
-		metric_name=metric_name,
-	)
 
-	print(f"[OK] {metric_name} listesi yazildi: {accuracy_txt_path}")
-	print(f"[OK] {metric_name} dizisi: {accuracy_values}")
-	print(f"[OK] Ortalama {metric_name}: {average_accuracy:.6f}")
+	if len(feature_percent_values) > 1:
+		print(f"[INFO] Coklu feature-percent calisacak: {feature_percent_values}")
+
+	for percent_idx, feature_percent in enumerate(feature_percent_values, start=1):
+		if len(feature_percent_values) > 1:
+			print(
+				f"\n[INFO] Feature-percent {percent_idx}/{len(feature_percent_values)} basladi: "
+				f"%{feature_percent}"
+			)
+
+		if args.save_encoded_dataset:
+			if args.task != "classification":
+				raise ValueError("--save-encoded-dataset su an classification modu icin destekleniyor.")
+			configure_tensorflow_device(args.device)
+			set_reproducible(random_state)
+			dataset_filename = convert_txt_dataset_to_csv(args.dataset_name)
+			dataset_folder = Path(dataset_filename).stem
+			print(f"[INFO] Sadece encoded CSV uretilecek. Veri yukleniyor: {dataset_filename}")
+			df = load_data(dataset_filename, folder="raw", target_column=args.target_column)
+			encoded_path = save_dimension_reduced_classification_dataset(
+				df=df,
+				dataset_folder=dataset_folder,
+				target_column=args.target_column,
+				id_column=normalize_id_column(args.id_column),
+				feature_percent=feature_percent,
+				random_state=random_state,
+				autoencoder_early_stopping_patience=autoencoder_early_stopping_patience if autoencoder_early_stopping_patience > 0 else None,
+				autoencoder_early_stopping_min_delta=args.autoencoder_early_stopping_min_delta,
+				save_training_plots=args.save_training_plots,
+			)
+			print(f"[OK] Encoded dataset hazir: {encoded_path.name}")
+			continue
+
+		if args.accuracy_list_txt.strip():
+			accuracy_txt_path = Path(args.accuracy_list_txt)
+			if len(feature_percent_values) > 1:
+				feature_percent_tag = format_feature_percent_tag(feature_percent)
+				accuracy_txt_path = (
+					accuracy_txt_path.parent
+					/ f"{accuracy_txt_path.stem}_top_{feature_percent_tag}{accuracy_txt_path.suffix or '.txt'}"
+				)
+		else:
+			dataset_folder = Path(args.dataset_name).stem
+			feature_percent_tag = format_feature_percent_tag(feature_percent)
+			output_dataset_folder = dataset_folder
+			output_feature_percent = feature_percent
+			metric_output_prefix = format_metric_output_prefix(output_feature_percent, output_dataset_folder)
+			if args.task == "clustering":
+				accuracy_txt_path = (
+					Path("outputs")
+					/ "clustering"
+					/ output_dataset_folder
+					/ "metrics"
+					/ f"{metric_output_prefix}_cluster_rmse_runs.txt"
+				)
+			elif args.task == "regression":
+				accuracy_txt_path = (
+					Path("outputs")
+					/ "autoencoder"
+					/ output_dataset_folder
+					/ "metrics"
+					/ f"{metric_output_prefix}_pearson_r_runs.txt"
+				)
+			else:
+				accuracy_filename = f"{metric_output_prefix}_accuracy_runs.txt"
+				if args.evaluate_dimension_reduction:
+					accuracy_filename = f"top_{feature_percent_tag}_dimension_reduction_accuracy_runs.txt"
+				accuracy_txt_path = (
+					Path("outputs")
+					/ "autoencoder"
+					/ output_dataset_folder
+					/ "metrics"
+					/ accuracy_filename
+				)
+		ensure_dir(accuracy_txt_path.parent)
+
+		accuracy_values, average_accuracy = run_repeated_experiments(
+			dataset_name=args.dataset_name,
+			validation_dataset_name=args.validation_dataset_name.strip() or None,
+			target_column=args.target_column,
+			id_column=args.id_column,
+			task=args.task,
+			encoding_dim=args.encoding_dim,
+			feature_percent=feature_percent,
+			random_state=random_state,
+			classifier_epochs=args.classifier_epochs,
+			classifier_hidden_units=classifier_hidden_units,
+			classifier_dropout_rates=classifier_dropout_rates,
+			classifier_learning_rate=args.classifier_learning_rate,
+			classifier_model=args.classifier_model,
+			regression_model=args.regression_model,
+			svr_kernel=args.svr_kernel,
+			svr_c=args.svr_c,
+			svr_epsilon=args.svr_epsilon,
+			svr_gamma=svr_gamma,
+			kmeans_regression_clusters=args.kmeans_regression_clusters,
+			kmeans_regression_n_init=args.kmeans_regression_n_init,
+			device=args.device,
+			feature_chunk_size=args.feature_chunk_size,
+			chunk_feature_threshold=args.chunk_feature_threshold,
+			enable_feature_chunking=not args.disable_feature_chunking,
+			classifier_early_stopping_patience=args.classifier_early_stopping_patience if args.classifier_early_stopping_patience > 0 else None,
+			autoencoder_early_stopping_patience=autoencoder_early_stopping_patience if autoencoder_early_stopping_patience > 0 else None,
+			classifier_early_stopping_monitor=args.classifier_early_stopping_monitor,
+			classifier_early_stopping_min_delta=args.classifier_early_stopping_min_delta,
+			autoencoder_early_stopping_min_delta=args.autoencoder_early_stopping_min_delta,
+			classifier_class_weight=args.classifier_class_weight,
+			classifier_sampling=args.classifier_sampling,
+			cluster_k=cluster_k,
+			cluster_min_k=cluster_min_k,
+			cluster_max_k=cluster_max_k,
+			save_training_plots=args.save_training_plots,
+			actual_predicted_top_n=args.actual_predicted_top_n,
+			evaluate_dimension_reduction=args.evaluate_dimension_reduction,
+			repeat_runs=args.repeat_runs,
+			accuracy_txt_path=accuracy_txt_path,
+			metric_name=metric_name,
+		)
+
+		result_label = format_feature_output_label(feature_percent, Path(args.dataset_name).stem)
+		print(f"[OK] {result_label} {metric_name} listesi yazildi: {accuracy_txt_path}")
+		print(f"[OK] {result_label} {metric_name} dizisi: {accuracy_values}")
+		print(f"[OK] {result_label} Ortalama {metric_name}: {average_accuracy:.6f}")
