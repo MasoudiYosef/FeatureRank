@@ -1,0 +1,43 @@
+{
+    "test_accuracy": 0.9135802469135802,
+    "test_precision": 0.9041095890410958,
+    "test_recall": 1.0,
+    "test_f1": 0.9496402877697842,
+    "average_precision": 0.9964781737552957,
+    "roc_auc": 0.9858585858585859,
+    "task": "classification",
+    "method": "DimensionReduction",
+    "feature_percent": 30.0,
+    "original_feature_count": 20530,
+    "selected_feature_count": 6159,
+    "latent_feature_count": 6159,
+    "class_count": 2,
+    "split_seed": 42,
+    "outer_train_count": 720,
+    "outer_test_count": 81,
+    "scaler_fit_scope": "outer_train_only",
+    "encoded_scaler_fit_scope": "encoded_outer_train_only",
+    "autoencoder_fit_scope": "outer_train_only",
+    "classifier_fit_scope": "encoded_outer_train_only",
+    "test_seen_during_fit": false,
+    "autoencoder_epochs": 50,
+    "dimension_reduction_mse": 0.5591705441474915,
+    "dimension_reduction_rmse": 0.7477770684819718,
+    "autoencoder_reconstruction_mse": 0.5591705441474915,
+    "autoencoder_reconstruction_rmse": 0.7477770684819718,
+    "classifier_model": "neural",
+    "elapsed_seconds": 652.5638487499673,
+    "classification_predictions_path": "outputs/autoencoder/gen_expression_data/KIRC_gen_expression_data/top_30_dimension_reduction_classification_predictions.csv",
+    "current_class_label": "KIRC",
+    "class_counts": {
+        "BRCA": 300,
+        "COAD": 78,
+        "KIRC": 146,
+        "LUAD": 141,
+        "PRAD": 136
+    },
+    "binary_label_counts": {
+        "label_0": 15,
+        "label_1": 66
+    }
+}

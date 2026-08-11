@@ -100,3 +100,4 @@ print(accuracy)
 
 accuracy=AutoEncoder(X,y)
 print(accuracy)
+
