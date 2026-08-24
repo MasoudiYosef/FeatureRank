@@ -1,0 +1,19 @@
+[0.6248683334144766]
+Sirali Pearson_r: [0.6248683334144766]
+Ortalama Pearson_r: 0.624868
+Std Pearson_r: 0.000000
+MSE listesi: [0.024127593263983727]
+Sirali MSE (dusuk iyi): [0.024127593263983727]
+Ortalama MSE: 0.024128
+Std MSE: 0.000000
+RMSE listesi: [0.15533059345790104]
+Sirali RMSE (dusuk iyi): [0.15533059345790104]
+Ortalama RMSE: 0.155331
+Std RMSE: 0.000000
+Correlation listesi: [0.6248683334144766]
+Sirali Correlation (yuksek iyi): [0.6248683334144766]
+Ortalama Correlation: 0.624868
+Std Correlation: 0.000000
+Run sureleri saniye: [11.347]
+Ortalama sure saniye: 11.347
+Std sure saniye: 0.000

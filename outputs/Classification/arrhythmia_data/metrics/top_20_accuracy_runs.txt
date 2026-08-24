@@ -1,0 +1,19 @@
+[0.757502885725279]
+Sirali Accuracy: [0.757502885725279]
+Ortalama Accuracy: 0.757503
+Std Accuracy: 0.000000
+Precision listesi: [0.7311081185071182]
+Sirali Precision (yuksek iyi): [0.7311081185071182]
+Ortalama Precision: 0.731108
+Std Precision: 0.000000
+Recall listesi: [0.8193215339233038]
+Sirali Recall (yuksek iyi): [0.8193215339233038]
+Ortalama Recall: 0.819322
+Std Recall: 0.000000
+F1 listesi: [0.7720396373512071]
+Sirali F1 (yuksek iyi): [0.7720396373512071]
+Ortalama F1: 0.772040
+Std F1: 0.000000
+Run sureleri saniye: [119.505]
+Ortalama sure saniye: 119.505
+Std sure saniye: 0.000

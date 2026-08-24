@@ -1,0 +1,26 @@
+{
+    "num_classes": 13,
+    "class_labels": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        14,
+        15,
+        16
+    ],
+    "macro_average": true,
+    "class_metrics_path": "outputs/Classification/arrhythmia_data/metrics/ORG_multiclass_class_metrics.csv",
+    "test_accuracy": 0.7339361292804926,
+    "test_precision": 0.7067986521622535,
+    "test_recall": 0.896755162241888,
+    "test_f1": 0.783386594157956,
+    "test_mse": 2.001989756010275,
+    "test_rmse": 1.323200800450462
+}

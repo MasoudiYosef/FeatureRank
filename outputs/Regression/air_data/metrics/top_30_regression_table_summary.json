@@ -1,0 +1,20 @@
+{
+    "DS": "AIR",
+    "AL": "FeatureRank",
+    "NOF": 4,
+    "ET": 11.347248499980196,
+    "ER": 0.15533059345790104,
+    "ER_STD": 0.0,
+    "ER_CI_1": 0.15533059345790104,
+    "ER_CI_2": 0.15533059345790104,
+    "CORR": 0.6248683334144766,
+    "CORR_STD": 0.0,
+    "CORR_CI_1": 0.6248683334144766,
+    "CORR_CI_2": 0.6248683334144766,
+    "REGRESSION_MODEL": "neural",
+    "KMEANS_REGRESSION_CLUSTERS": null,
+    "KMEANS_REGRESSION_N_INIT": null,
+    "repeat_runs": 1,
+    "feature_percent": 30.0,
+    "runs_csv_path": "outputs/Regression/air_data/metrics/top_30_regression_runs.csv"
+}

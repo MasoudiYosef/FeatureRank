@@ -1,0 +1,2 @@
+Dataset,Method,Feature_Percent,NOF,Average_Accuracy,Accuracy_STD,Average_Precision,Precision_STD,Average_Recall,Recall_STD,Average_F1,F1_STD,Accuracy_pm_STD,Precision_pm_STD,Recall_pm_STD,F1_pm_STD,repeat_runs,runs_csv_path
+breast_cancer_data,FeatureRank,10.0,3,0.6666666666666666,0.0,0.5833333333333334,0.0,0.3333333333333333,0.0,0.42424242424242425,0.0,0.666667 ± 0.000000,0.583333 ± 0.000000,0.333333 ± 0.000000,0.424242 ± 0.000000,1,outputs/Classification/breast_cancer_data/metrics/top_10_classification_runs.csv

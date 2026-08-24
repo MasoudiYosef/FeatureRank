@@ -1,0 +1,18 @@
+{
+    "task": "regression",
+    "feature_percent": 30.0,
+    "selected_feature_count": 4,
+    "elapsed_seconds": 11.27006258291658,
+    "autoencoder_reconstruction_mse": 0.5541374683380127,
+    "regression_mse": 0.024127593263983727,
+    "regression_rmse": 0.15533059345790104,
+    "regression_mae": 0.11910156905651093,
+    "regression_r2": 0.3876493573188782,
+    "cosine_similarity": 0.9837316274642944,
+    "pearson_r": 0.6248683334144766,
+    "correlation": 0.6248683334144766,
+    "target_scaling": "standard",
+    "regression_model": "neural",
+    "prediction_errors_path": "outputs/Regression/air_data/top_30_prediction_errors.csv",
+    "train_prediction_errors_path": "outputs/Regression/air_data/top_30_train_prediction_errors.csv"
+}

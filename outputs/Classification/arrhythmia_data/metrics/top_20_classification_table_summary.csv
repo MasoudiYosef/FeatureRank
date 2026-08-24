@@ -1,0 +1,2 @@
+Dataset,Method,Feature_Percent,NOF,Average_Accuracy,Accuracy_STD,Average_Precision,Precision_STD,Average_Recall,Recall_STD,Average_F1,F1_STD,Accuracy_pm_STD,Precision_pm_STD,Recall_pm_STD,F1_pm_STD,repeat_runs,runs_csv_path
+arrhythmia_data,FeatureRank,20.0,,0.757502885725279,0.0,0.7311081185071182,0.0,0.8193215339233038,0.0,0.7720396373512071,0.0,0.757503 ± 0.000000,0.731108 ± 0.000000,0.819322 ± 0.000000,0.772040 ± 0.000000,1,outputs/Classification/arrhythmia_data/metrics/top_20_classification_runs.csv

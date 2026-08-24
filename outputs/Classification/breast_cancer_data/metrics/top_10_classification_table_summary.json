@@ -1,0 +1,20 @@
+{
+    "Dataset": "breast_cancer_data",
+    "Method": "FeatureRank",
+    "Feature_Percent": 10.0,
+    "NOF": 3,
+    "Average_Accuracy": 0.6666666666666666,
+    "Accuracy_STD": 0.0,
+    "Average_Precision": 0.5833333333333334,
+    "Precision_STD": 0.0,
+    "Average_Recall": 0.3333333333333333,
+    "Recall_STD": 0.0,
+    "Average_F1": 0.42424242424242425,
+    "F1_STD": 0.0,
+    "Accuracy_pm_STD": "0.666667 \u00b1 0.000000",
+    "Precision_pm_STD": "0.583333 \u00b1 0.000000",
+    "Recall_pm_STD": "0.333333 \u00b1 0.000000",
+    "F1_pm_STD": "0.424242 \u00b1 0.000000",
+    "repeat_runs": 1,
+    "runs_csv_path": "outputs/Classification/breast_cancer_data/metrics/top_10_classification_runs.csv"
+}

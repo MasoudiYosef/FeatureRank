@@ -1,0 +1,41 @@
+{
+    "feature_percent": 20.0,
+    "selected_feature_count": 56,
+    "test_mse": 0.8015952706336975,
+    "test_rmse": 0.8953185302637813,
+    "threshold": 0.5,
+    "elapsed_seconds": 9.26319337496534,
+    "classifier_model": "neural",
+    "classifier_class_weight": "none",
+    "classifier_sampling": "none",
+    "test_accuracy": 0.9347826086956522,
+    "test_precision": 0.9347826086956522,
+    "test_recall": 1.0,
+    "test_f1": 0.9662921348314607,
+    "average_precision": 0.9034360144518601,
+    "roc_auc": 0.2790697674418605,
+    "classification_predictions_path": "outputs/Classification/arrhythmia_data/6_arrhythmia_data/top_20_classification_predictions.csv",
+    "confusion_matrix_path": "outputs/Classification/arrhythmia_data/6_arrhythmia_data/top_20_confusion_matrix.png",
+    "precision_recall_curve_path": "outputs/Classification/arrhythmia_data/6_arrhythmia_data/top_20_precision_recall_curve.png",
+    "roc_curve_path": "outputs/Classification/arrhythmia_data/6_arrhythmia_data/top_20_roc_curve.png",
+    "current_class_label": 6,
+    "class_counts": {
+        "1": 245,
+        "2": 44,
+        "3": 15,
+        "4": 15,
+        "5": 13,
+        "6": 25,
+        "7": 3,
+        "8": 2,
+        "9": 9,
+        "10": 50,
+        "14": 4,
+        "15": 5,
+        "16": 22
+    },
+    "binary_label_counts": {
+        "label_0": 3,
+        "label_1": 43
+    }
+}

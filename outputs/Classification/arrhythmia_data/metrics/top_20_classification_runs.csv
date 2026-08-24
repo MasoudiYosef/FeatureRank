@@ -1,0 +1,2 @@
+run,feature_percent,selected_feature_count,test_accuracy,test_precision,test_recall,test_f1,average_precision,roc_auc,classifier_model,classifier_class_weight,classifier_sampling,split_seed,method,encoded_dataset,encoded_source_feature_percent,encoded_active_feature_percent,elapsed_seconds
+1,20.0,,0.757502885725279,0.7311081185071182,0.8193215339233038,0.7720396373512071,,,neural,none,none,42,FeatureRank,False,,,119.50508395803627

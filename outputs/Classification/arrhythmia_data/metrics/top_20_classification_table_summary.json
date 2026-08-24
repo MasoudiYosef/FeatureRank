@@ -1,0 +1,20 @@
+{
+    "Dataset": "arrhythmia_data",
+    "Method": "FeatureRank",
+    "Feature_Percent": 20.0,
+    "NOF": null,
+    "Average_Accuracy": 0.757502885725279,
+    "Accuracy_STD": 0.0,
+    "Average_Precision": 0.7311081185071182,
+    "Precision_STD": 0.0,
+    "Average_Recall": 0.8193215339233038,
+    "Recall_STD": 0.0,
+    "Average_F1": 0.7720396373512071,
+    "F1_STD": 0.0,
+    "Accuracy_pm_STD": "0.757503 \u00b1 0.000000",
+    "Precision_pm_STD": "0.731108 \u00b1 0.000000",
+    "Recall_pm_STD": "0.819322 \u00b1 0.000000",
+    "F1_pm_STD": "0.772040 \u00b1 0.000000",
+    "repeat_runs": 1,
+    "runs_csv_path": "outputs/Classification/arrhythmia_data/metrics/top_20_classification_runs.csv"
+}

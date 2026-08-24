@@ -1,0 +1,37 @@
+{
+    "test_mse": 1.235620379447937,
+    "test_rmse": 1.1115846254100212,
+    "threshold": 0.5,
+    "elapsed_seconds": 9.60624433401972,
+    "classifier_model": "neural",
+    "classifier_class_weight": "none",
+    "classifier_sampling": "none",
+    "test_accuracy": 1.0,
+    "test_precision": 1.0,
+    "test_recall": 1.0,
+    "test_f1": 1.0,
+    "average_precision": null,
+    "roc_auc": null,
+    "classification_predictions_path": "outputs/Classification/arrhythmia_data/14_arrhythmia_data/ORG_classification_predictions.csv",
+    "confusion_matrix_path": "outputs/Classification/arrhythmia_data/14_arrhythmia_data/ORG_confusion_matrix.png",
+    "current_class_label": 14,
+    "class_counts": {
+        "1": 245,
+        "2": 44,
+        "3": 15,
+        "4": 15,
+        "5": 13,
+        "6": 25,
+        "7": 3,
+        "8": 2,
+        "9": 9,
+        "10": 50,
+        "14": 4,
+        "15": 5,
+        "16": 22
+    },
+    "binary_label_counts": {
+        "label_0": 0,
+        "label_1": 46
+    }
+}

@@ -1,0 +1,2 @@
+run,feature_percent,selected_feature_count,regression_mse,regression_rmse,regression_mae,regression_r2,pearson_r,correlation,cosine_similarity,regression_model,kmeans_regression_clusters,kmeans_regression_effective_clusters,kmeans_regression_n_init,elapsed_seconds
+1,30.0,4,0.024127593263983727,0.15533059345790104,0.11910156905651093,0.3876493573188782,0.6248683334144766,0.6248683334144766,0.9837316274642944,neural,,,,11.347248499980196

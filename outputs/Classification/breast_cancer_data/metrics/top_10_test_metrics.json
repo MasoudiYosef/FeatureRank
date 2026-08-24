@@ -1,0 +1,21 @@
+{
+    "feature_percent": 10.0,
+    "selected_feature_count": 3,
+    "test_mse": 0.688066303730011,
+    "test_rmse": 0.8294976212925574,
+    "threshold": 0.5,
+    "elapsed_seconds": 9.320075999945402,
+    "classifier_model": "neural",
+    "classifier_class_weight": "none",
+    "classifier_sampling": "none",
+    "test_accuracy": 0.6666666666666666,
+    "test_precision": 0.5833333333333334,
+    "test_recall": 0.3333333333333333,
+    "test_f1": 0.42424242424242425,
+    "average_precision": 0.529334016913245,
+    "roc_auc": 0.6785714285714285,
+    "classification_predictions_path": "outputs/Classification/breast_cancer_data/top_10_classification_predictions.csv",
+    "confusion_matrix_path": "outputs/Classification/breast_cancer_data/top_10_confusion_matrix.png",
+    "precision_recall_curve_path": "outputs/Classification/breast_cancer_data/top_10_precision_recall_curve.png",
+    "roc_curve_path": "outputs/Classification/breast_cancer_data/top_10_roc_curve.png"
+}
