@@ -354,6 +354,20 @@ def parse_svr_gamma(gamma_text: str) -> str | float:
 	return float(gamma_text)
 
 
+def compute_rmse_from_mse(mse: float | None) -> float | None:
+	if mse is None:
+		return None
+	mse_value = float(mse)
+	if np.isnan(mse_value):
+		return None
+	return float(np.sqrt(max(mse_value, 0.0)))
+
+
+def add_test_rmse_metric(metrics_data: dict, mse_key: str = "test_mse", rmse_key: str = "test_rmse") -> None:
+	if mse_key in metrics_data:
+		metrics_data[rmse_key] = compute_rmse_from_mse(metrics_data.get(mse_key))
+
+
 def compute_binary_class_weight(y_train: np.ndarray, mode: str = "none") -> dict[int, float] | None:
 	mode = str(mode).strip().lower()
 	if mode in {"none", "", "off", "false"}:
@@ -984,12 +998,16 @@ def compute_multiclass_one_vs_rest_metric_summary(
 
 		class_counts = metrics.get("class_counts", {})
 		class_count = class_counts.get(str(class_label), class_counts.get(class_label, 1))
+		metric_mse = metrics.get("test_mse")
+		metric_rmse = metrics.get("test_rmse", compute_rmse_from_mse(metric_mse))
 		row = {
 			"class_label": class_label,
 			"accuracy": float(metrics["test_accuracy"]),
 			"precision": float(metrics["test_precision"]) if metrics.get("test_precision") is not None else None,
 			"recall": float(metrics["test_recall"]) if metrics.get("test_recall") is not None else None,
 			"f1": float(metrics["test_f1"]) if metrics.get("test_f1") is not None else None,
+			"mse": float(metric_mse) if metric_mse is not None else None,
+			"rmse": float(metric_rmse) if metric_rmse is not None else None,
 			"class_count": int(class_count) if class_count is not None else 1,
 			"metrics_path": str(metrics_path),
 		}
@@ -1014,6 +1032,8 @@ def compute_multiclass_one_vs_rest_metric_summary(
 		"test_precision": weighted_average("precision"),
 		"test_recall": weighted_average("recall"),
 		"test_f1": weighted_average("f1"),
+		"test_mse": weighted_average("mse"),
+		"test_rmse": weighted_average("rmse"),
 		"class_metric_rows": metric_rows,
 	}
 
@@ -3048,6 +3068,7 @@ def save_binary_classification_report_outputs(
 	)
 
 	metrics_data = dict(base_metrics)
+	add_test_rmse_metric(metrics_data)
 	metrics_data.update(
 		rename_classification_metric_prefix(
 			compute_binary_classification_metrics(y_true=y_true, y_pred=y_pred, y_score=y_score),
@@ -3719,6 +3740,7 @@ def run_chunked_binary_experiment(
 				"feature_count": len(chunk_feature_names),
 				"selected_feature_count": len(chunk_selected_df),
 				"test_mse": chunk_test_mse,
+				"test_rmse": compute_rmse_from_mse(chunk_test_mse),
 				"test_accuracy": None,
 				"weights_path": str(chunk_weights_path),
 				"selected_features_path": str(chunk_selected_path),
@@ -3834,6 +3856,7 @@ def run_chunked_binary_experiment(
 		"chunk_count": len(feature_chunks),
 		"merged_feature_count": len(merged_feature_names),
 		"test_mse": final_test_mse,
+		"test_rmse": compute_rmse_from_mse(final_test_mse),
 		"threshold": THRESHOLD,
 		"classifier_model": classifier_model,
 		"classifier_class_weight": classifier_class_weight,
@@ -4034,6 +4057,7 @@ def run_binary_experiment(
 			"dimension_reduction_dataset": True,
 			"classification_input": "direct_dimension_reduced_features",
 			"test_mse": None,
+			"test_rmse": None,
 			"threshold": THRESHOLD,
 			"elapsed_seconds": elapsed_seconds,
 			"classifier_model": classifier_model,
@@ -4247,6 +4271,7 @@ def run_binary_experiment(
 	)
 	org_metrics_data = {
 		"test_mse": test_mse,
+		"test_rmse": compute_rmse_from_mse(test_mse),
 		"threshold": THRESHOLD,
 		"elapsed_seconds": elapsed_seconds,
 		"classifier_model": classifier_model,
@@ -4283,6 +4308,7 @@ def run_binary_experiment(
 		"feature_percent": output_feature_percent,
 		"selected_feature_count": len(selected_df),
 		"test_mse": filtered_test_mse,
+		"test_rmse": compute_rmse_from_mse(filtered_test_mse),
 		"threshold": THRESHOLD,
 		"elapsed_seconds": elapsed_seconds,
 		"classifier_model": classifier_model,
