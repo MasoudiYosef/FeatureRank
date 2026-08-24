@@ -5,6 +5,7 @@ import random
 import json
 import time
 import re
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 os.environ.setdefault("MPLCONFIGDIR", str((Path.cwd() / ".matplotlib_cache").resolve()))
@@ -102,6 +103,79 @@ PCA_CLUSTER_CMAP = ListedColormap(
 	],
 	name="feature_rank_cluster",
 )
+
+
+OUTPUT_ROOT = Path("outputs")
+CLASSIFICATION_OUTPUT_ROOT = OUTPUT_ROOT / "Classification"
+REGRESSION_OUTPUT_ROOT = OUTPUT_ROOT / "Regression"
+CLUSTERING_OUTPUT_ROOT = OUTPUT_ROOT / "clustering"
+
+
+def classification_output_dir(dataset_folder: str | Path) -> Path:
+	return CLASSIFICATION_OUTPUT_ROOT / Path(dataset_folder)
+
+
+def regression_output_dir(dataset_folder: str | Path) -> Path:
+	return REGRESSION_OUTPUT_ROOT / Path(dataset_folder)
+
+
+def clustering_output_dir(dataset_folder: str | Path) -> Path:
+	return CLUSTERING_OUTPUT_ROOT / Path(dataset_folder)
+
+
+def task_output_dir(task: str, dataset_folder: str | Path) -> Path:
+	task_key = task.lower().strip()
+	if task_key == "classification":
+		return classification_output_dir(dataset_folder)
+	if task_key == "regression":
+		return regression_output_dir(dataset_folder)
+	if task_key == "clustering":
+		return clustering_output_dir(dataset_folder)
+	raise ValueError(f"Bilinmeyen task output tipi: {task}")
+
+
+@dataclass(frozen=True)
+class ExperimentConfig:
+	"""Runtime parameters shared by a single experiment run."""
+
+	dataset_name: str = "breast_cancer_data.csv"
+	validation_dataset_name: str | None = None
+	target_column: str = "target"
+	id_column: str | None = "ID"
+	task: str = "classification"
+	encoding_dim: int = 8
+	feature_percent: float = 50.0
+	random_state: int | None = RANDOM_STATE
+	classifier_epochs: int = DEFAULT_CLASSIFIER_EPOCHS
+	classifier_hidden_units: tuple[int, ...] = DEFAULT_CLASSIFIER_HIDDEN_UNITS
+	classifier_dropout_rates: tuple[float, ...] | None = None
+	classifier_learning_rate: float = 0.001
+	classifier_model: str = DEFAULT_CLASSIFIER_MODEL
+	regression_model: str = DEFAULT_REGRESSION_MODEL
+	svr_kernel: str = DEFAULT_SVR_KERNEL
+	svr_c: float = DEFAULT_SVR_C
+	svr_epsilon: float = DEFAULT_SVR_EPSILON
+	svr_gamma: str | float = DEFAULT_SVR_GAMMA
+	kmeans_regression_clusters: int = DEFAULT_KMEANS_REGRESSION_CLUSTERS
+	kmeans_regression_n_init: int = DEFAULT_KMEANS_REGRESSION_N_INIT
+	device: str = "auto"
+	feature_chunk_size: int = DEFAULT_FEATURE_CHUNK_SIZE
+	chunk_feature_threshold: int = DEFAULT_CHUNK_FEATURE_THRESHOLD
+	enable_feature_chunking: bool = True
+	classifier_early_stopping_patience: int | None = DEFAULT_EARLY_STOPPING_PATIENCE
+	autoencoder_early_stopping_patience: int | None = DEFAULT_AUTOENCODER_EARLY_STOPPING_PATIENCE
+	classifier_early_stopping_monitor: str = DEFAULT_CLASSIFIER_EARLY_STOPPING_MONITOR
+	classifier_early_stopping_min_delta: float = DEFAULT_EARLY_STOPPING_MIN_DELTA
+	autoencoder_early_stopping_min_delta: float = DEFAULT_AUTOENCODER_EARLY_STOPPING_MIN_DELTA
+	classifier_class_weight: str = "none"
+	classifier_sampling: str = "none"
+	cluster_k: int | None = None
+	cluster_min_k: int = DEFAULT_CLUSTER_MIN_K
+	cluster_max_k: int = DEFAULT_CLUSTER_MAX_K
+	save_training_plots: bool = False
+	actual_predicted_top_n: int | None = None
+	save_encoded_dataset: bool = False
+	evaluate_dimension_reduction: bool = False
 
 
 def compute_dimension_reduction_hidden_dim(input_dim: int, encoding_dim: int) -> int:
@@ -983,9 +1057,7 @@ def compute_multiclass_one_vs_rest_metric_summary(
 	for class_label in class_labels:
 		binary_dataset_folder = f"{class_label}_{dataset_folder}"
 		metrics_path = (
-			Path("outputs")
-			/ "autoencoder"
-			/ dataset_folder
+			classification_output_dir(dataset_folder)
 			/ binary_dataset_folder
 			/ "metrics"
 			/ metric_filename
@@ -1129,9 +1201,10 @@ def collect_repeated_run_history(
 	dataset_folder: str,
 	feature_percent: float,
 	run_idx: int,
+	task: str = "classification",
 ) -> pd.DataFrame | None:
 	feature_percent_tag = format_feature_percent_tag(feature_percent)
-	history_dir = Path("outputs") / "autoencoder" / dataset_folder / "training_history"
+	history_dir = task_output_dir(task, dataset_folder) / "training_history"
 	candidates = [
 		history_dir / f"top_{feature_percent_tag}_classifier_history.csv",
 		history_dir / f"top_{feature_percent_tag}_regressor_history.csv",
@@ -1156,9 +1229,7 @@ def collect_repeated_multiclass_run_history(
 	run_idx: int,
 ) -> pd.DataFrame | None:
 	metrics_path = (
-		Path("outputs")
-		/ "autoencoder"
-		/ dataset_folder
+		classification_output_dir(dataset_folder)
 		/ "metrics"
 		/ format_test_metrics_filename(feature_percent, dataset_folder)
 	)
@@ -1180,7 +1251,7 @@ def collect_repeated_multiclass_run_history(
 	class_history_frames: list[pd.DataFrame] = []
 	for class_label in class_labels:
 		binary_dataset_folder = f"{class_label}_{dataset_folder}"
-		history_dir = Path("outputs") / "autoencoder" / dataset_folder / binary_dataset_folder / "training_history"
+		history_dir = classification_output_dir(dataset_folder) / binary_dataset_folder / "training_history"
 		candidates = [
 			history_dir / f"top_{feature_percent_tag}_classifier_history.csv",
 			history_dir / f"chunked_top_{feature_percent_tag}_final_classifier_history.csv",
@@ -1204,7 +1275,7 @@ def collect_repeated_multiclass_run_history(
 		return None
 
 	macro_history = combined_history.groupby("epoch", as_index=False)[metric_columns].mean()
-	history_dir = Path("outputs") / "autoencoder" / dataset_folder / "training_history"
+	history_dir = classification_output_dir(dataset_folder) / "training_history"
 	ensure_dir(history_dir)
 	run_macro_path = history_dir / f"run_{run_idx:03d}_top_{feature_percent_tag}_macro_classifier_history.csv"
 	macro_history.to_csv(run_macro_path, index=False)
@@ -1463,7 +1534,7 @@ def save_dimension_reduced_classification_dataset(
 	dimension_reduction_epochs = AUTOENCODER_EPOCHS
 	dimension_reduction_hidden_activation = "relu"
 
-	output_dir = Path("outputs") / "autoencoder" / dataset_folder
+	output_dir = classification_output_dir(dataset_folder)
 	encoded_output_dir = output_dir / "dimension_reduction"
 	history_dir = output_dir / "training_history"
 	ensure_dir(output_dir)
@@ -1940,7 +2011,7 @@ def run_dimension_reduction_classification_experiment(
 	feature_percent_tag = format_feature_percent_tag(feature_percent)
 	file_prefix = f"top_{feature_percent_tag}_dimension_reduction"
 
-	output_dir = Path("outputs") / "autoencoder" / dataset_folder
+	output_dir = classification_output_dir(dataset_folder)
 	metrics_dir = output_dir / "metrics"
 	history_dir = output_dir / "training_history"
 	ensure_dir(output_dir)
@@ -2129,7 +2200,7 @@ def run_dimension_reduction_multiclass_one_vs_rest(
 	)
 	macro_filtered_accuracy = float(filtered_summary_metrics["test_accuracy"])
 
-	output_dir = Path("outputs") / "autoencoder" / dataset_folder
+	output_dir = classification_output_dir(dataset_folder)
 	metrics_dir = output_dir / "metrics"
 	ensure_dir(output_dir)
 	ensure_dir(metrics_dir)
@@ -2625,7 +2696,7 @@ def ensure_shared_selected_features(
 	feature_names = X_train_raw.columns.tolist()
 	feature_percent_tag = format_feature_percent_tag(feature_percent)
 
-	output_dir = Path("outputs") / "autoencoder" / dataset_folder
+	output_dir = classification_output_dir(dataset_folder)
 	ensure_dir(output_dir)
 	selected_features_path = output_dir / f"top_{feature_percent_tag}_max_abs_features.csv"
 	if selected_features_path.exists():
@@ -2698,7 +2769,7 @@ def generate_chunked_shared_selected_features(
 	feature_chunks = split_feature_names_into_chunks(feature_names, feature_chunk_size)
 	feature_percent_tag = format_feature_percent_tag(feature_percent)
 
-	output_dir = Path("outputs") / "autoencoder" / dataset_folder
+	output_dir = classification_output_dir(dataset_folder)
 	chunks_dir = output_dir / "chunks" / "shared_feature_ranking"
 	ensure_dir(output_dir)
 	ensure_dir(chunks_dir)
@@ -2806,7 +2877,7 @@ def run_clustering_experiment(
 	y_all = pd.concat([processed["y_train"], processed["y_test"]], axis=0)
 	feature_names = X_raw.columns.tolist()
 
-	output_dir = Path("outputs") / "clustering" / dataset_folder
+	output_dir = clustering_output_dir(dataset_folder)
 	metrics_dir = output_dir / "metrics"
 	ensure_dir(output_dir)
 	ensure_dir(metrics_dir)
@@ -3118,7 +3189,7 @@ def run_chunked_binary_train_validation_experiment(
 	feature_chunks = split_feature_names_into_chunks(feature_names, feature_chunk_size)
 	feature_percent_tag = format_feature_percent_tag(feature_percent)
 
-	output_dir = Path("outputs") / "autoencoder" / dataset_folder
+	output_dir = classification_output_dir(dataset_folder)
 	metrics_dir = output_dir / "metrics"
 	chunks_dir = output_dir / "chunks"
 	history_dir = output_dir / "training_history"
@@ -3422,7 +3493,7 @@ def run_binary_train_validation_experiment(
 	X_train = X_train.astype(np.float32)
 	X_validation = X_validation.astype(np.float32)
 
-	output_dir = Path("outputs") / "autoencoder" / dataset_folder
+	output_dir = classification_output_dir(dataset_folder)
 	metrics_dir = output_dir / "metrics"
 	history_dir = output_dir / "training_history"
 	ensure_dir(output_dir)
@@ -3649,11 +3720,11 @@ def run_chunked_binary_experiment(
 	feature_chunks = split_feature_names_into_chunks(feature_names, feature_chunk_size)
 	feature_percent_tag = format_feature_percent_tag(feature_percent)
 
-	output_dir = Path("outputs") / "autoencoder" / dataset_folder
+	output_dir = classification_output_dir(dataset_folder)
 	metrics_dir = output_dir / "metrics"
 	chunks_dir = output_dir / "chunks"
 	history_dir = output_dir / "training_history"
-	filtered_data_dir = Path("data") / "autoencoder" / dataset_folder
+	filtered_data_dir = Path("data") / "filtered" / dataset_folder
 	ensure_dir(output_dir)
 	ensure_dir(metrics_dir)
 	ensure_dir(chunks_dir)
@@ -3984,7 +4055,7 @@ def run_binary_experiment(
 	X_train = X_train.astype(np.float32)
 	X_test = X_test.astype(np.float32)
 
-	output_dir = Path("outputs") / "autoencoder" / dataset_folder
+	output_dir = classification_output_dir(dataset_folder)
 	metrics_dir = output_dir / "metrics"
 	history_dir = output_dir / "training_history"
 	ensure_dir(output_dir)
@@ -4150,7 +4221,7 @@ def run_binary_experiment(
 			output_path=selected_features_path,
 		)
 
-	filtered_data_dir = Path("data") / "autoencoder" / dataset_folder
+	filtered_data_dir = Path("data") / "filtered" / dataset_folder
 	ensure_dir(filtered_data_dir)
 	filtered_dataset_path = filtered_data_dir / f"top_{feature_percent_tag}_max_abs_features_dataset.csv"
 	filtered_df = save_filtered_dataset_from_selected_features(
@@ -4427,7 +4498,7 @@ def run_regression_experiment(
 	X_train = X_train.astype(np.float32)
 	X_test = X_test.astype(np.float32)
 
-	output_dir = Path("outputs") / "autoencoder" / dataset_folder
+	output_dir = regression_output_dir(dataset_folder)
 	metrics_dir = output_dir / "metrics"
 	history_dir = output_dir / "training_history"
 	ensure_dir(output_dir)
@@ -4500,7 +4571,7 @@ def run_regression_experiment(
 			output_path=selected_features_path,
 		)
 
-	filtered_data_dir = Path("data") / "autoencoder" / dataset_folder
+	filtered_data_dir = Path("data") / "filtered" / dataset_folder
 	ensure_dir(filtered_data_dir)
 	filtered_dataset_path = filtered_data_dir / f"top_{feature_percent_tag}_max_abs_features_dataset.csv"
 	save_filtered_dataset_from_selected_features(
@@ -4699,7 +4770,7 @@ def run_multiclass_one_vs_rest(
 		org_summary_metrics = dict(filtered_summary_metrics)
 		macro_org_accuracy = macro_filtered_accuracy
 
-	output_dir = Path("outputs") / "autoencoder" / dataset_folder
+	output_dir = classification_output_dir(dataset_folder)
 	metrics_dir = output_dir / "metrics"
 	ensure_dir(output_dir)
 	ensure_dir(metrics_dir)
@@ -4756,6 +4827,278 @@ def run_multiclass_one_vs_rest(
 	return macro_org_accuracy, macro_filtered_accuracy
 
 
+class ExperimentRunner:
+	"""Coordinates one existing experiment without changing its training flow."""
+
+	def __init__(self, config: ExperimentConfig) -> None:
+		self.config = config
+
+	def run(self) -> tuple[float, float]:
+		config = self.config
+		task = config.task.lower().strip()
+		if task not in {"classification", "clustering", "regression"}:
+			raise ValueError("task 'classification', 'clustering' veya 'regression' olmali.")
+
+		configure_tensorflow_device(config.device)
+		set_reproducible(config.random_state)
+		if config.random_state is None:
+			print("[INFO] random_state: None (rastgele)")
+		else:
+			print(f"[INFO] random_state: {config.random_state} (sabit)")
+
+		feature_percent = validate_feature_percent(config.feature_percent)
+		id_column = normalize_id_column(config.id_column)
+		dataset_filename = convert_txt_dataset_to_csv(config.dataset_name)
+		dataset_folder = Path(dataset_filename).stem
+		print(f"[INFO] Veri yukleniyor: {dataset_filename}")
+		df = load_data(dataset_filename, folder="raw", target_column=config.target_column)
+
+		if config.save_encoded_dataset:
+			return self._save_encoded_dataset(df, dataset_folder, task, id_column, feature_percent)
+		if config.evaluate_dimension_reduction:
+			self._validate_dimension_reduction_request(task, dataset_folder)
+		if config.validation_dataset_name is not None and config.validation_dataset_name.strip():
+			return self._run_explicit_validation(df, dataset_folder, task, id_column, feature_percent)
+		return self._run_task(df, dataset_folder, task, id_column, feature_percent)
+
+	def _save_encoded_dataset(
+		self,
+		df: pd.DataFrame,
+		dataset_folder: str,
+		task: str,
+		id_column: str | None,
+		feature_percent: float,
+	) -> tuple[float, float]:
+		if task != "classification":
+			raise ValueError("--save-encoded-dataset su an classification modu icin destekleniyor.")
+		config = self.config
+		save_dimension_reduced_classification_dataset(
+			df=df,
+			dataset_folder=dataset_folder,
+			target_column=config.target_column,
+			id_column=id_column,
+			feature_percent=feature_percent,
+			random_state=config.random_state,
+			autoencoder_early_stopping_patience=config.autoencoder_early_stopping_patience,
+			autoencoder_early_stopping_min_delta=config.autoencoder_early_stopping_min_delta,
+			save_training_plots=config.save_training_plots,
+		)
+		return 0.0, 0.0
+
+	def _validate_dimension_reduction_request(self, task: str, dataset_folder: str) -> None:
+		if task != "classification":
+			raise ValueError("--evaluate-dimension-reduction sadece classification modunda kullanilabilir.")
+		if is_encoded_dataset_folder(dataset_folder):
+			raise ValueError(
+				"Leakage-free evaluation ham dataset ile calismalidir; daha once uretilmis encoded CSV vermeyin."
+			)
+
+	def _run_explicit_validation(
+		self,
+		train_df: pd.DataFrame,
+		dataset_folder: str,
+		task: str,
+		id_column: str | None,
+		feature_percent: float,
+	) -> tuple[float, float]:
+		if task != "classification":
+			raise ValueError("--validation-dataset-name simdilik sadece classification modunda destekleniyor.")
+
+		config = self.config
+		validation_dataset_filename = convert_txt_dataset_to_csv(config.validation_dataset_name)
+		validation_dataset_folder = Path(validation_dataset_filename).stem
+		print(f"[INFO] Validation veri yukleniyor: {validation_dataset_filename}")
+		validation_df = load_data(validation_dataset_filename, folder="raw", target_column=config.target_column)
+		if is_probable_regression_target(train_df[config.target_column]) or is_probable_regression_target(
+			validation_df[config.target_column]
+		):
+			raise ValueError(
+				"Train/validation classification modu sürekli sayısal target ile calistirilamaz. "
+				"Regression icin ayri akisa gecilmeli."
+			)
+		if int(train_df[config.target_column].nunique(dropna=True)) > 2 or int(
+			validation_df[config.target_column].nunique(dropna=True)
+		) > 2:
+			raise ValueError("Explicit train/validation modu simdilik sadece binary classification icin kullanilmali.")
+
+		return run_binary_train_validation_experiment(
+			train_df=train_df,
+			validation_df=validation_df,
+			dataset_folder=dataset_folder,
+			validation_dataset_folder=validation_dataset_folder,
+			target_column=config.target_column,
+			id_column=id_column,
+			encoding_dim=config.encoding_dim,
+			feature_percent=feature_percent,
+			random_state=config.random_state,
+			classifier_epochs=config.classifier_epochs,
+			classifier_hidden_units=config.classifier_hidden_units,
+			classifier_dropout_rates=config.classifier_dropout_rates,
+			classifier_learning_rate=config.classifier_learning_rate,
+			classifier_model=config.classifier_model,
+			classifier_early_stopping_patience=config.classifier_early_stopping_patience,
+			autoencoder_early_stopping_patience=config.autoencoder_early_stopping_patience,
+			classifier_early_stopping_monitor=config.classifier_early_stopping_monitor,
+			classifier_early_stopping_min_delta=config.classifier_early_stopping_min_delta,
+			autoencoder_early_stopping_min_delta=config.autoencoder_early_stopping_min_delta,
+			classifier_class_weight=config.classifier_class_weight,
+			classifier_sampling=config.classifier_sampling,
+			feature_chunk_size=config.feature_chunk_size,
+			chunk_feature_threshold=config.chunk_feature_threshold,
+			enable_feature_chunking=config.enable_feature_chunking,
+			save_training_plots=config.save_training_plots,
+		)
+
+	def _run_task(
+		self,
+		df: pd.DataFrame,
+		dataset_folder: str,
+		task: str,
+		id_column: str | None,
+		feature_percent: float,
+	) -> tuple[float, float]:
+		config = self.config
+		if task == "clustering":
+			return run_clustering_experiment(
+				df=df,
+				dataset_folder=dataset_folder,
+				target_column=config.target_column,
+				id_column=id_column,
+				encoding_dim=config.encoding_dim,
+				feature_percent=feature_percent,
+				random_state=config.random_state,
+				cluster_k=config.cluster_k,
+				cluster_min_k=config.cluster_min_k,
+				cluster_max_k=config.cluster_max_k,
+				feature_chunk_size=config.feature_chunk_size,
+				chunk_feature_threshold=config.chunk_feature_threshold,
+				enable_feature_chunking=config.enable_feature_chunking,
+				save_training_plots=config.save_training_plots,
+			)
+		if task == "regression":
+			return run_regression_experiment(
+				df=df,
+				dataset_folder=dataset_folder,
+				target_column=config.target_column,
+				id_column=id_column,
+				encoding_dim=config.encoding_dim,
+				feature_percent=feature_percent,
+				random_state=config.random_state,
+				classifier_epochs=config.classifier_epochs,
+				classifier_hidden_units=config.classifier_hidden_units,
+				classifier_dropout_rates=config.classifier_dropout_rates,
+				classifier_learning_rate=config.classifier_learning_rate,
+				regression_model=config.regression_model,
+				svr_kernel=config.svr_kernel,
+				svr_c=config.svr_c,
+				svr_epsilon=config.svr_epsilon,
+				svr_gamma=config.svr_gamma,
+				kmeans_regression_clusters=config.kmeans_regression_clusters,
+				kmeans_regression_n_init=config.kmeans_regression_n_init,
+				classifier_early_stopping_patience=config.classifier_early_stopping_patience,
+				autoencoder_early_stopping_patience=config.autoencoder_early_stopping_patience,
+				classifier_early_stopping_min_delta=config.classifier_early_stopping_min_delta,
+				autoencoder_early_stopping_min_delta=config.autoencoder_early_stopping_min_delta,
+				save_training_plots=config.save_training_plots,
+				actual_predicted_top_n=config.actual_predicted_top_n,
+			)
+
+		if is_probable_regression_target(df[config.target_column]):
+			raise ValueError(
+				"Bu veri setinin target kolonu sürekli sayısal görünüyor; classification olarak çalıştırılamaz. "
+				"Regression için komutu şu şekilde kullan: --task regression"
+			)
+		class_count = int(df[config.target_column].nunique(dropna=True))
+		if config.evaluate_dimension_reduction:
+			return self._run_dimension_reduction(df, dataset_folder, id_column, feature_percent, class_count)
+		if class_count > 2:
+			return run_multiclass_one_vs_rest(
+				df=df,
+				dataset_folder=dataset_folder,
+				target_column=config.target_column,
+				id_column=id_column,
+				encoding_dim=config.encoding_dim,
+				feature_percent=feature_percent,
+				random_state=config.random_state,
+				classifier_epochs=config.classifier_epochs,
+				classifier_hidden_units=config.classifier_hidden_units,
+				classifier_dropout_rates=config.classifier_dropout_rates,
+				classifier_learning_rate=config.classifier_learning_rate,
+				classifier_model=config.classifier_model,
+				classifier_early_stopping_patience=config.classifier_early_stopping_patience,
+				autoencoder_early_stopping_patience=config.autoencoder_early_stopping_patience,
+				classifier_early_stopping_monitor=config.classifier_early_stopping_monitor,
+				classifier_early_stopping_min_delta=config.classifier_early_stopping_min_delta,
+				autoencoder_early_stopping_min_delta=config.autoencoder_early_stopping_min_delta,
+				classifier_class_weight=config.classifier_class_weight,
+				classifier_sampling=config.classifier_sampling,
+				feature_chunk_size=config.feature_chunk_size,
+				chunk_feature_threshold=config.chunk_feature_threshold,
+				enable_feature_chunking=config.enable_feature_chunking,
+				save_training_plots=config.save_training_plots,
+			)
+		return run_binary_experiment(
+			df=df,
+			dataset_folder=dataset_folder,
+			target_column=config.target_column,
+			id_column=id_column,
+			encoding_dim=config.encoding_dim,
+			feature_percent=feature_percent,
+			random_state=config.random_state,
+			classifier_epochs=config.classifier_epochs,
+			classifier_hidden_units=config.classifier_hidden_units,
+			classifier_dropout_rates=config.classifier_dropout_rates,
+			classifier_learning_rate=config.classifier_learning_rate,
+			classifier_model=config.classifier_model,
+			classifier_early_stopping_patience=config.classifier_early_stopping_patience,
+			autoencoder_early_stopping_patience=config.autoencoder_early_stopping_patience,
+			classifier_early_stopping_monitor=config.classifier_early_stopping_monitor,
+			classifier_early_stopping_min_delta=config.classifier_early_stopping_min_delta,
+			autoencoder_early_stopping_min_delta=config.autoencoder_early_stopping_min_delta,
+			classifier_class_weight=config.classifier_class_weight,
+			classifier_sampling=config.classifier_sampling,
+			feature_chunk_size=config.feature_chunk_size,
+			chunk_feature_threshold=config.chunk_feature_threshold,
+			enable_feature_chunking=config.enable_feature_chunking,
+			save_training_plots=config.save_training_plots,
+		)
+
+	def _run_dimension_reduction(
+		self,
+		df: pd.DataFrame,
+		dataset_folder: str,
+		id_column: str | None,
+		feature_percent: float,
+		class_count: int,
+	) -> tuple[float, float]:
+		config = self.config
+		common_kwargs = {
+			"df": df,
+			"dataset_folder": dataset_folder,
+			"target_column": config.target_column,
+			"id_column": id_column,
+			"encoding_dim": config.encoding_dim,
+			"feature_percent": feature_percent,
+			"random_state": config.random_state,
+			"classifier_epochs": config.classifier_epochs,
+			"classifier_hidden_units": config.classifier_hidden_units,
+			"classifier_dropout_rates": config.classifier_dropout_rates,
+			"classifier_learning_rate": config.classifier_learning_rate,
+			"classifier_model": config.classifier_model,
+			"classifier_early_stopping_patience": config.classifier_early_stopping_patience,
+			"autoencoder_early_stopping_patience": config.autoencoder_early_stopping_patience,
+			"classifier_early_stopping_monitor": config.classifier_early_stopping_monitor,
+			"classifier_early_stopping_min_delta": config.classifier_early_stopping_min_delta,
+			"autoencoder_early_stopping_min_delta": config.autoencoder_early_stopping_min_delta,
+			"classifier_class_weight": config.classifier_class_weight,
+			"classifier_sampling": config.classifier_sampling,
+			"save_training_plots": config.save_training_plots,
+		}
+		if class_count > 2:
+			return run_dimension_reduction_multiclass_one_vs_rest(**common_kwargs)
+		return run_dimension_reduction_classification_experiment(**common_kwargs)
+
+
 def main(
 	dataset_name: str = "breast_cancer_data.csv",
 	validation_dataset_name: str | None = None,
@@ -4796,68 +5139,13 @@ def main(
 	save_encoded_dataset: bool = False,
 	evaluate_dimension_reduction: bool = False,
 ) -> tuple[float, float]:
-	task = task.lower().strip()
-	if task not in {"classification", "clustering", "regression"}:
-		raise ValueError("task 'classification', 'clustering' veya 'regression' olmali.")
-	configure_tensorflow_device(device)
-	set_reproducible(random_state)
-	if random_state is None:
-		print("[INFO] random_state: None (rastgele)")
-	else:
-		print(f"[INFO] random_state: {random_state} (sabit)")
-	feature_percent = validate_feature_percent(feature_percent)
-	id_column = normalize_id_column(id_column)
-
-	dataset_filename = convert_txt_dataset_to_csv(dataset_name)
-	dataset_folder = Path(dataset_filename).stem
-
-	print(f"[INFO] Veri yukleniyor: {dataset_filename}")
-	df = load_data(dataset_filename, folder="raw", target_column=target_column)
-	if save_encoded_dataset:
-		if task != "classification":
-			raise ValueError("--save-encoded-dataset su an classification modu icin destekleniyor.")
-		save_dimension_reduced_classification_dataset(
-			df=df,
-			dataset_folder=dataset_folder,
+	return ExperimentRunner(
+		ExperimentConfig(
+			dataset_name=dataset_name,
+			validation_dataset_name=validation_dataset_name,
 			target_column=target_column,
 			id_column=id_column,
-			feature_percent=feature_percent,
-			random_state=random_state,
-			autoencoder_early_stopping_patience=autoencoder_early_stopping_patience,
-			autoencoder_early_stopping_min_delta=autoencoder_early_stopping_min_delta,
-			save_training_plots=save_training_plots,
-		)
-		return 0.0, 0.0
-	if evaluate_dimension_reduction and task != "classification":
-		raise ValueError("--evaluate-dimension-reduction sadece classification modunda kullanilabilir.")
-	if evaluate_dimension_reduction and is_encoded_dataset_folder(dataset_folder):
-		raise ValueError(
-			"Leakage-free evaluation ham dataset ile calismalidir; daha once uretilmis encoded CSV vermeyin."
-		)
-
-	if validation_dataset_name is not None and validation_dataset_name.strip():
-		if task != "classification":
-			raise ValueError("--validation-dataset-name simdilik sadece classification modunda destekleniyor.")
-		validation_dataset_filename = convert_txt_dataset_to_csv(validation_dataset_name)
-		validation_dataset_folder = Path(validation_dataset_filename).stem
-		print(f"[INFO] Validation veri yukleniyor: {validation_dataset_filename}")
-		validation_df = load_data(validation_dataset_filename, folder="raw", target_column=target_column)
-		if is_probable_regression_target(df[target_column]) or is_probable_regression_target(validation_df[target_column]):
-			raise ValueError(
-				"Train/validation classification modu sürekli sayısal target ile calistirilamaz. "
-				"Regression icin ayri akisa gecilmeli."
-			)
-		train_class_count = int(df[target_column].nunique(dropna=True))
-		validation_class_count = int(validation_df[target_column].nunique(dropna=True))
-		if train_class_count > 2 or validation_class_count > 2:
-			raise ValueError("Explicit train/validation modu simdilik sadece binary classification icin kullanilmali.")
-		return run_binary_train_validation_experiment(
-			train_df=df,
-			validation_df=validation_df,
-			dataset_folder=dataset_folder,
-			validation_dataset_folder=validation_dataset_folder,
-			target_column=target_column,
-			id_column=id_column,
+			task=task,
 			encoding_dim=encoding_dim,
 			feature_percent=feature_percent,
 			random_state=random_state,
@@ -4866,50 +5154,6 @@ def main(
 			classifier_dropout_rates=classifier_dropout_rates,
 			classifier_learning_rate=classifier_learning_rate,
 			classifier_model=classifier_model,
-			classifier_early_stopping_patience=classifier_early_stopping_patience,
-			autoencoder_early_stopping_patience=autoencoder_early_stopping_patience,
-			classifier_early_stopping_monitor=classifier_early_stopping_monitor,
-			classifier_early_stopping_min_delta=classifier_early_stopping_min_delta,
-			autoencoder_early_stopping_min_delta=autoencoder_early_stopping_min_delta,
-			classifier_class_weight=classifier_class_weight,
-			classifier_sampling=classifier_sampling,
-			feature_chunk_size=feature_chunk_size,
-			chunk_feature_threshold=chunk_feature_threshold,
-			enable_feature_chunking=enable_feature_chunking,
-			save_training_plots=save_training_plots,
-		)
-
-	if task == "clustering":
-		return run_clustering_experiment(
-			df=df,
-			dataset_folder=dataset_folder,
-			target_column=target_column,
-				id_column=id_column,
-				encoding_dim=encoding_dim,
-				feature_percent=feature_percent,
-				random_state=random_state,
-				cluster_k=cluster_k,
-				cluster_min_k=cluster_min_k,
-				cluster_max_k=cluster_max_k,
-				feature_chunk_size=feature_chunk_size,
-				chunk_feature_threshold=chunk_feature_threshold,
-				enable_feature_chunking=enable_feature_chunking,
-				save_training_plots=save_training_plots,
-			)
-
-	if task == "regression":
-		return run_regression_experiment(
-			df=df,
-			dataset_folder=dataset_folder,
-			target_column=target_column,
-			id_column=id_column,
-			encoding_dim=encoding_dim,
-			feature_percent=feature_percent,
-			random_state=random_state,
-			classifier_epochs=classifier_epochs,
-			classifier_hidden_units=classifier_hidden_units,
-			classifier_dropout_rates=classifier_dropout_rates,
-			classifier_learning_rate=classifier_learning_rate,
 			regression_model=regression_model,
 			svr_kernel=svr_kernel,
 			svr_c=svr_c,
@@ -4917,120 +5161,26 @@ def main(
 			svr_gamma=svr_gamma,
 			kmeans_regression_clusters=kmeans_regression_clusters,
 			kmeans_regression_n_init=kmeans_regression_n_init,
-			classifier_early_stopping_patience=classifier_early_stopping_patience,
-			autoencoder_early_stopping_patience=autoencoder_early_stopping_patience,
-			classifier_early_stopping_min_delta=classifier_early_stopping_min_delta,
-			autoencoder_early_stopping_min_delta=autoencoder_early_stopping_min_delta,
-			save_training_plots=save_training_plots,
-			actual_predicted_top_n=actual_predicted_top_n,
-		)
-
-	if task == "classification" and is_probable_regression_target(df[target_column]):
-		raise ValueError(
-			"Bu veri setinin target kolonu sürekli sayısal görünüyor; classification olarak çalıştırılamaz. "
-			"Regression için komutu şu şekilde kullan: --task regression"
-		)
-	if evaluate_dimension_reduction:
-		class_count = int(df[target_column].nunique(dropna=True))
-		if class_count > 2:
-			return run_dimension_reduction_multiclass_one_vs_rest(
-				df=df,
-				dataset_folder=dataset_folder,
-				target_column=target_column,
-				id_column=id_column,
-				encoding_dim=encoding_dim,
-				feature_percent=feature_percent,
-				random_state=random_state,
-				classifier_epochs=classifier_epochs,
-				classifier_hidden_units=classifier_hidden_units,
-				classifier_dropout_rates=classifier_dropout_rates,
-				classifier_learning_rate=classifier_learning_rate,
-				classifier_model=classifier_model,
-				classifier_early_stopping_patience=classifier_early_stopping_patience,
-				autoencoder_early_stopping_patience=autoencoder_early_stopping_patience,
-				classifier_early_stopping_monitor=classifier_early_stopping_monitor,
-				classifier_early_stopping_min_delta=classifier_early_stopping_min_delta,
-				autoencoder_early_stopping_min_delta=autoencoder_early_stopping_min_delta,
-				classifier_class_weight=classifier_class_weight,
-				classifier_sampling=classifier_sampling,
-				save_training_plots=save_training_plots,
-			)
-		return run_dimension_reduction_classification_experiment(
-			df=df,
-			dataset_folder=dataset_folder,
-			target_column=target_column,
-			id_column=id_column,
-			encoding_dim=encoding_dim,
-			feature_percent=feature_percent,
-			random_state=random_state,
-			classifier_epochs=classifier_epochs,
-			classifier_hidden_units=classifier_hidden_units,
-			classifier_dropout_rates=classifier_dropout_rates,
-			classifier_learning_rate=classifier_learning_rate,
-			classifier_model=classifier_model,
-			classifier_early_stopping_patience=classifier_early_stopping_patience,
-			autoencoder_early_stopping_patience=autoencoder_early_stopping_patience,
-			classifier_early_stopping_monitor=classifier_early_stopping_monitor,
-			classifier_early_stopping_min_delta=classifier_early_stopping_min_delta,
-			autoencoder_early_stopping_min_delta=autoencoder_early_stopping_min_delta,
-			classifier_class_weight=classifier_class_weight,
-			classifier_sampling=classifier_sampling,
-			save_training_plots=save_training_plots,
-		)
-
-	class_count = int(df[target_column].nunique(dropna=True))
-	if class_count > 2:
-		return run_multiclass_one_vs_rest(
-			df=df,
-			dataset_folder=dataset_folder,
-			target_column=target_column,
-			id_column=id_column,
-			encoding_dim=encoding_dim,
-			feature_percent=feature_percent,
-			random_state=random_state,
-			classifier_epochs=classifier_epochs,
-			classifier_hidden_units=classifier_hidden_units,
-			classifier_dropout_rates=classifier_dropout_rates,
-			classifier_learning_rate=classifier_learning_rate,
-			classifier_model=classifier_model,
-			classifier_early_stopping_patience=classifier_early_stopping_patience,
-			autoencoder_early_stopping_patience=autoencoder_early_stopping_patience,
-			classifier_early_stopping_monitor=classifier_early_stopping_monitor,
-			classifier_early_stopping_min_delta=classifier_early_stopping_min_delta,
-			autoencoder_early_stopping_min_delta=autoencoder_early_stopping_min_delta,
-			classifier_class_weight=classifier_class_weight,
-			classifier_sampling=classifier_sampling,
+			device=device,
 			feature_chunk_size=feature_chunk_size,
 			chunk_feature_threshold=chunk_feature_threshold,
 			enable_feature_chunking=enable_feature_chunking,
+			classifier_early_stopping_patience=classifier_early_stopping_patience,
+			autoencoder_early_stopping_patience=autoencoder_early_stopping_patience,
+			classifier_early_stopping_monitor=classifier_early_stopping_monitor,
+			classifier_early_stopping_min_delta=classifier_early_stopping_min_delta,
+			autoencoder_early_stopping_min_delta=autoencoder_early_stopping_min_delta,
+			classifier_class_weight=classifier_class_weight,
+			classifier_sampling=classifier_sampling,
+			cluster_k=cluster_k,
+			cluster_min_k=cluster_min_k,
+			cluster_max_k=cluster_max_k,
 			save_training_plots=save_training_plots,
+			actual_predicted_top_n=actual_predicted_top_n,
+			save_encoded_dataset=save_encoded_dataset,
+			evaluate_dimension_reduction=evaluate_dimension_reduction,
 		)
-
-	return run_binary_experiment(
-		df=df,
-		dataset_folder=dataset_folder,
-		target_column=target_column,
-		id_column=id_column,
-		encoding_dim=encoding_dim,
-		feature_percent=feature_percent,
-		random_state=random_state,
-		classifier_epochs=classifier_epochs,
-		classifier_hidden_units=classifier_hidden_units,
-		classifier_dropout_rates=classifier_dropout_rates,
-		classifier_learning_rate=classifier_learning_rate,
-		classifier_model=classifier_model,
-		classifier_early_stopping_patience=classifier_early_stopping_patience,
-		autoencoder_early_stopping_patience=autoencoder_early_stopping_patience,
-		classifier_early_stopping_monitor=classifier_early_stopping_monitor,
-		classifier_early_stopping_min_delta=classifier_early_stopping_min_delta,
-		autoencoder_early_stopping_min_delta=autoencoder_early_stopping_min_delta,
-		classifier_class_weight=classifier_class_weight,
-		classifier_sampling=classifier_sampling,
-		feature_chunk_size=feature_chunk_size,
-		chunk_feature_threshold=chunk_feature_threshold,
-		enable_feature_chunking=enable_feature_chunking,
-		save_training_plots=save_training_plots,
-	)
+	).run()
 
 
 def run_repeated_experiments(
@@ -5093,6 +5243,45 @@ def run_repeated_experiments(
 	if evaluate_dimension_reduction:
 		metric_output_prefix = f"top_{feature_percent_tag}_dimension_reduction"
 	lower_is_better = metric_name in {"Cluster_RMSE"}
+	base_config = ExperimentConfig(
+		dataset_name=dataset_name,
+		validation_dataset_name=validation_dataset_name,
+		target_column=target_column,
+		id_column=id_column,
+		task=task,
+		encoding_dim=encoding_dim,
+		feature_percent=feature_percent,
+		random_state=random_state,
+		classifier_epochs=classifier_epochs,
+		classifier_hidden_units=classifier_hidden_units,
+		classifier_dropout_rates=classifier_dropout_rates,
+		classifier_learning_rate=classifier_learning_rate,
+		classifier_model=classifier_model,
+		regression_model=regression_model,
+		svr_kernel=svr_kernel,
+		svr_c=svr_c,
+		svr_epsilon=svr_epsilon,
+		svr_gamma=svr_gamma,
+		kmeans_regression_clusters=kmeans_regression_clusters,
+		kmeans_regression_n_init=kmeans_regression_n_init,
+		device=device,
+		feature_chunk_size=feature_chunk_size,
+		chunk_feature_threshold=chunk_feature_threshold,
+		enable_feature_chunking=enable_feature_chunking,
+		classifier_early_stopping_patience=classifier_early_stopping_patience,
+		autoencoder_early_stopping_patience=autoencoder_early_stopping_patience,
+		classifier_early_stopping_monitor=classifier_early_stopping_monitor,
+		classifier_early_stopping_min_delta=classifier_early_stopping_min_delta,
+		autoencoder_early_stopping_min_delta=autoencoder_early_stopping_min_delta,
+		classifier_class_weight=classifier_class_weight,
+		classifier_sampling=classifier_sampling,
+		cluster_k=cluster_k,
+		cluster_min_k=cluster_min_k,
+		cluster_max_k=cluster_max_k,
+		save_training_plots=save_training_plots,
+		actual_predicted_top_n=actual_predicted_top_n,
+		evaluate_dimension_reduction=evaluate_dimension_reduction,
+	)
 
 	for run_idx in range(1, repeat_runs + 1):
 		run_random_state = random_state
@@ -5102,45 +5291,9 @@ def run_repeated_experiments(
 		if repeat_runs > 1:
 			print(f"[INFO] Bu calismanin split seed degeri: {run_random_state}")
 		run_start_time = time.perf_counter()
-		_, filtered_test_accuracy = main(
-			dataset_name=dataset_name,
-			validation_dataset_name=validation_dataset_name,
-			target_column=target_column,
-			id_column=id_column,
-			task=task,
-			encoding_dim=encoding_dim,
-			feature_percent=feature_percent,
-			random_state=run_random_state,
-			classifier_epochs=classifier_epochs,
-			classifier_hidden_units=classifier_hidden_units,
-			classifier_dropout_rates=classifier_dropout_rates,
-			classifier_learning_rate=classifier_learning_rate,
-			classifier_model=classifier_model,
-			regression_model=regression_model,
-			svr_kernel=svr_kernel,
-			svr_c=svr_c,
-			svr_epsilon=svr_epsilon,
-			svr_gamma=svr_gamma,
-			kmeans_regression_clusters=kmeans_regression_clusters,
-			kmeans_regression_n_init=kmeans_regression_n_init,
-			device=device,
-			feature_chunk_size=feature_chunk_size,
-			chunk_feature_threshold=chunk_feature_threshold,
-			enable_feature_chunking=enable_feature_chunking,
-			classifier_early_stopping_patience=classifier_early_stopping_patience,
-			autoencoder_early_stopping_patience=autoencoder_early_stopping_patience,
-			classifier_early_stopping_monitor=classifier_early_stopping_monitor,
-			classifier_early_stopping_min_delta=classifier_early_stopping_min_delta,
-			autoencoder_early_stopping_min_delta=autoencoder_early_stopping_min_delta,
-			classifier_class_weight=classifier_class_weight,
-			classifier_sampling=classifier_sampling,
-			cluster_k=cluster_k,
-			cluster_min_k=cluster_min_k,
-			cluster_max_k=cluster_max_k,
-			save_training_plots=save_training_plots,
-			actual_predicted_top_n=actual_predicted_top_n,
-			evaluate_dimension_reduction=evaluate_dimension_reduction,
-		)
+		_, filtered_test_accuracy = ExperimentRunner(
+			replace(base_config, random_state=run_random_state)
+		).run()
 		run_elapsed_seconds = time.perf_counter() - run_start_time
 		run_durations.append(run_elapsed_seconds)
 		print(f"[OK] Calisma {run_idx}/{repeat_runs} suresi: {run_elapsed_seconds:.2f} saniye")
@@ -5153,9 +5306,7 @@ def run_repeated_experiments(
 			if evaluate_dimension_reduction:
 				classification_metrics_filename = f"{metric_output_prefix}_test_metrics.json"
 			classification_metrics_path = (
-				Path("outputs")
-				/ "autoencoder"
-				/ result_dataset_folder
+				classification_output_dir(result_dataset_folder)
 				/ "metrics"
 				/ classification_metrics_filename
 			)
@@ -5192,9 +5343,7 @@ def run_repeated_experiments(
 				)
 		if task == "regression":
 			regression_metrics_path = (
-				Path("outputs")
-				/ "autoencoder"
-				/ dataset_folder
+				regression_output_dir(dataset_folder)
 				/ "metrics"
 				/ f"top_{feature_percent_tag}_test_metrics.json"
 			)
@@ -5222,9 +5371,7 @@ def run_repeated_experiments(
 				)
 		if task == "clustering":
 			clustering_metrics_path = (
-				Path("outputs")
-				/ "clustering"
-				/ dataset_folder
+				clustering_output_dir(dataset_folder)
 				/ "metrics"
 				/ f"top_{feature_percent_tag}_cluster_metrics.json"
 			)
@@ -5250,6 +5397,7 @@ def run_repeated_experiments(
 				dataset_folder=dataset_folder,
 				feature_percent=feature_percent,
 				run_idx=run_idx,
+				task=task,
 			)
 			if history_df is None and task == "classification":
 				history_df = collect_repeated_multiclass_run_history(
@@ -5434,12 +5582,12 @@ def run_repeated_experiments(
 	accuracy_txt_path.write_text(output_text, encoding="utf-8")
 
 	if task == "clustering":
-		plot_output_dir = Path("outputs") / "clustering" / result_dataset_folder / "metrics"
+		plot_output_dir = clustering_output_dir(result_dataset_folder) / "metrics"
 		boxplot_metric_name = "Cluster_RMSE"
 	elif task == "regression":
-		plot_output_dir = Path("outputs") / "autoencoder" / result_dataset_folder / "metrics"
+		plot_output_dir = regression_output_dir(result_dataset_folder) / "metrics"
 	else:
-		plot_output_dir = Path("outputs") / "autoencoder" / result_dataset_folder / "metrics"
+		plot_output_dir = classification_output_dir(result_dataset_folder) / "metrics"
 		boxplot_metric_name = "Accuracy"
 	if task != "regression":
 		save_metric_boxplot(
@@ -5607,7 +5755,7 @@ def run_repeated_experiments(
 		print(f"[OK] Regression tablo ozeti CSV: {summary_csv_path}")
 
 	if save_training_plots and task in {"classification", "regression"} and history_frames:
-		history_dir = Path("outputs") / "autoencoder" / dataset_folder / "training_history"
+		history_dir = task_output_dir(task, dataset_folder) / "training_history"
 		save_average_convergence(
 			history_frames=history_frames,
 			output_dir=history_dir,
@@ -5776,17 +5924,13 @@ if __name__ == "__main__":
 			metric_output_prefix = format_metric_output_prefix(output_feature_percent, output_dataset_folder)
 			if args.task == "clustering":
 				accuracy_txt_path = (
-					Path("outputs")
-					/ "clustering"
-					/ output_dataset_folder
+					clustering_output_dir(output_dataset_folder)
 					/ "metrics"
 					/ f"{metric_output_prefix}_cluster_rmse_runs.txt"
 				)
 			elif args.task == "regression":
 				accuracy_txt_path = (
-					Path("outputs")
-					/ "autoencoder"
-					/ output_dataset_folder
+					regression_output_dir(output_dataset_folder)
 					/ "metrics"
 					/ f"{metric_output_prefix}_pearson_r_runs.txt"
 				)
@@ -5795,9 +5939,7 @@ if __name__ == "__main__":
 				if args.evaluate_dimension_reduction:
 					accuracy_filename = f"top_{feature_percent_tag}_dimension_reduction_accuracy_runs.txt"
 				accuracy_txt_path = (
-					Path("outputs")
-					/ "autoencoder"
-					/ output_dataset_folder
+					classification_output_dir(output_dataset_folder)
 					/ "metrics"
 					/ accuracy_filename
 				)

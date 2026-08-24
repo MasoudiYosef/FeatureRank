@@ -21,10 +21,16 @@ The project also includes separate scripts for large feature-block experiments a
 ```text
 Feature_Ranking_Project/
 ├── data/
-│   ├── raw/                         # Input datasets
-│   ├── autoencoder/                 # Selected feature datasets
-│   └── paper_dimension_reduction/   # Generated reduced datasets
-├── outputs/                         # Metrics, plots, and experiment results
+│   ├── raw/                         # Input datasets used by the scripts
+│   └── filtered_data/               # Filtered/selected feature datasets
+├── outputs/
+│   ├── Classification/              # Classification metrics, plots, and histories
+│   ├── Regression/                  # Regression metrics, plots, and histories
+│   ├── clustering/                  # Clustering metrics and figures
+│   ├── FIGURES/                     # Final paper-ready figures
+│   ├── split_datasets/              # Feature-block split datasets
+│   ├── autoencoder_reduced_datasets/    # Older reduced-dataset outputs
+│   └── autoencoder_reduced_evaluation/  # Older reduced-dataset evaluations
 ├── scripts/
 │   ├── run_autoencoder.py           # Main experiment script
 │   ├── run_block_feature_selection.py
@@ -32,9 +38,14 @@ Feature_Ranking_Project/
 │   ├── evaluate_paper_dimension_reduction.py
 │   └── create_*.py                  # Figure generation scripts
 ├── src/                             # Shared project code
+├── GPU_SETUP.md
+├── DIMENSION_REDUCTION_WORKFLOW.md
+├── requirements-gpu.txt
 ├── requirements.txt
-└── Readme.md
+└── README.md
 ```
+
+The repository may also contain older experiment folders such as `outputs/autoencoder/`. New classification and regression runs are saved under `outputs/Classification/` and `outputs/Regression/`.
 
 ## Installation
 
@@ -175,8 +186,11 @@ outputs/
 │   └── <dataset_name>/
 ├── clustering/
 │   └── <dataset_name>/
+├── FIGURES/
 ├── split_datasets/
-└── paper_dimension_reduction/
+├── paper_dimension_reduction/       # Created by paper dimension-reduction scripts
+├── autoencoder_reduced_datasets/    # Older reduced-dataset outputs may exist
+└── autoencoder_reduced_evaluation/  # Older reduced-dataset evaluations may exist
 ```
 
 Common output files include:
