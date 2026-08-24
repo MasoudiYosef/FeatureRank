@@ -168,9 +168,15 @@ Results are saved under `outputs/`.
 Common output folders:
 
 ```text
-outputs/autoencoder/<dataset_name>/
-outputs/clustering/<dataset_name>/
-outputs/paper_dimension_reduction/<dataset_name>/
+outputs/
+├── Classification/
+│   └── <dataset_name>/
+├── Regression/
+│   └── <dataset_name>/
+├── clustering/
+│   └── <dataset_name>/
+├── split_datasets/
+└── paper_dimension_reduction/
 ```
 
 Common output files include:
