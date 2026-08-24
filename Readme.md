@@ -107,6 +107,27 @@ data/raw/breast_cancer_data.csv
 data/raw/breast_cancer_label.csv
 ```
 
+### Large dataset files
+
+Some datasets used in the experiments may be too large to store directly in the GitHub repository. In that case, the repository can include only the code and README instructions, while the large dataset files are provided through external download links.
+
+After downloading a large dataset, place both files under `data/raw/` using the same naming format:
+
+```text
+data/raw/<dataset_name>_data.csv
+data/raw/<dataset_name>_label.csv
+```
+
+Large dataset links can be listed here:
+
+| Dataset | Data file | Label file |
+| --- | --- | --- |
+| Arcene | `<ARCENE_DATA_LINK>` | `<ARCENE_LABEL_LINK>` |
+| Gen Expression | `<GEN_EXPRESSION_DATA_LINK>` | `<GEN_EXPRESSION_LABEL_LINK>` |
+| Carcinom | `<CARCINOM_DATA_LINK>` | `<CARCINOM_LABEL_LINK>` |
+
+Replace the placeholder links with the actual download links before publishing the repository.
+
 The command then uses the data filename:
 
 ```bash
