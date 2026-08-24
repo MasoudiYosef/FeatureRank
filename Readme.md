@@ -1,210 +1,334 @@
-OTOMATIK ORTAM KURULUMU:
- - "bash scripts/setup_environment.sh" => Python 3.13.5 kontrol eder, pyenv varsa eksikse kurar, .venv oluşturur ve requirements.txt paketlerini yükler.
- - "source .venv/bin/activate" => Kurulumdan sonra sanal ortamı aktif eder.
+# Feature Ranking Project
 
-MANUEL ORTAM KURULUMU:
- - "python3 --version" => Python sürümünü kontrol et. Bu proje için önerilen sürüm Python 3.13.5.
- - "python3 -m venv .venv" => Bu komut proje içinde .venv klasörü oluşturur.
- - "source .venv/bin/activate" => Başarılı olursa terminalin başında genelde şöyle bir şey görünür: (.venv)
- - "python --version" => Sanal ortam içinde de Python sürümünün doğru olduğunu kontrol et.
+This project uses an autoencoder to rank features and evaluate selected feature subsets on classification, regression, and clustering tasks. It also includes separate workflows for large datasets and autoencoder-based dimension reduction.
 
-TENSORFLOW KURULUM HATASI:
- - "No matching distribution found for tensorflow==2.21.0" hatası genelde Python sürümü veya işletim sistemi/platform uyumsuzluğundan olur.
- - Manuel kurulumda "python3" komutu Python 3.13.5 değilse önce "bash scripts/setup_environment.sh" komutunu kullan.
- - Eski/yanlış .venv oluşturulduysa klasörü silip ortamı yeniden kur.
+The README focuses on the commands needed to install and run the project. For every available option, use:
 
-Kurulan Kütüphaneler :
- - "pip install -r requirements.txt" => CPU ile çalışmak için
- - "pip install -r requirements-gpu.txt" => GPU ile çalışmak için (bkz: GPU_SETUP.md)
- - "pip freeze > requirements.txt" => Projeyi başka bilgisayarda açarsan aynı kütüphaneleri tekrar kurabilirmemizi sağlar.
+```bash
+python scripts/run_autoencoder.py --help
+```
 
-GPU KURULUMU:
- - GPU'lu bir bilgisayarda çalıştırmak için GPU_SETUP.md dosyasını oku
- - CUDA, cuDNN ve NVIDIA Driver kurulum talimatları içerir
- - requirements-gpu.txt ile uyumlu TensorFlow kurulması sağlanır
+## What the Project Does
 
+The main FeatureRank workflow is:
 
-Tanımlar :
-pandas → veri okuma ve tablo işlemleri
-numpy → sayısal işlemler
-scikit-learn → preprocessing, split, metrics
-matplotlib → grafik
-seaborn → veri görselleştirme
-openpyxl → Excel dosyasını okumak için
-tensorflow → CNN ve autoencoder modeli için
+1. Load and preprocess a dataset.
+2. Train an autoencoder without using the target labels.
+3. Calculate feature importance from the first encoder layer weights.
+4. Select the highest-ranked percentage of original features.
+5. Train and evaluate a new model using only the selected features.
+6. Save rankings, metrics, histories, and figures under `outputs/`.
 
+FeatureRank keeps original feature columns. The separate dimension-reduction workflow instead creates new latent features from encoder outputs.
 
-Amacımız : Bir veri setindeki feature’ların hangilerinin daha önemli olduğunu CNN veya Autoencoder kullanarak bulmak ve bunları sıralamak.
+## Repository Structure
 
+```text
+Feature_Ranking_Project/
+|-- data/
+|   |-- raw/                         # Input datasets and labels
+|   `-- processed/                   # Generated processed data
+|-- outputs/
+|   |-- autoencoder/                 # Classification and regression results
+|   |-- clustering/                  # Clustering results
+|   `-- FIGURES/                     # Combined publication figures
+|-- scripts/
+|   |-- run_autoencoder.py           # Main experiment script
+|   |-- run_block_feature_selection.py
+|   |-- generate_paper_dimension_reduction.py
+|   |-- evaluate_paper_dimension_reduction.py
+|   `-- create_*.py                  # Figure-generation scripts
+|-- src/                             # Data, preprocessing, model, and utility code
+|-- requirements.txt
+|-- .python-version
+`-- README.md
+```
 
-CNN Çalışma Sistemi :
-    CNN’de feature importance → input feature → convolution → activation → output etkisi
+## Installation
 
-    CNN, özellikler (feature’lar) arasındaki yerel ilişkileri ve etkileşimleri öğrenir.
-    Birden fazla katman sayesinde hem tekil feature etkisini hem de feature’ların birlikte oluşturduğu örüntüleri (patterns) yakalar.
+### Requirements
 
-    Modeli eğitmek için çok katmanlı bir CNN yapısı kullandık. İlk katman feature’ları tek tek işlerken, sonraki katmanlar feature’lar arasındaki ilişkileri ve daha karmaşık pattern’leri öğrenir.
+- Python 3.13.5
+- pip
+- A virtual environment is recommended
+- GPU is optional; the project can run on CPU
 
-    Eğitim sırasında tüm katmanlar birlikte öğrenir, yani 1. katmanın ağırlıkları aslında 2. ve 3. katmanların etkisiyle şekillenir.
+### macOS or Linux
 
-    Ancak feature ranking yaparken tüm katmanlara bakmayız. Çünkü derin katmanlarda feature’lar karışır ve yorumlanamaz hale gelir.
+```bash
+git clone <REPOSITORY_URL>
+cd Feature_Ranking_Project
 
-    Bu yüzden sadece ilk katmanın aktivasyonlarını kullanarak, hangi feature’ın daha güçlü sinyal ürettiğini ölçer ve buna göre sıralama yaparız.
+python3.13 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+```
 
-    Tüm katmanlar öğrenme sürecine katkı verir, ancak feature importance doğrudan ilk katmandan çıkarılır.
+### Windows PowerShell
 
-    Bu projede önce veriyi yükleyip CNN modelini kurduk. Model, birden fazla convolution katmanı kullanarak sınıflandırma problemini öğrendi. Eğitim tamamlandıktan sonra feature importance’ı activations’tan değil, doğrudan ilk convolution katmanının kernel ağırlıklarından çıkardık. İlk conv katmanının kernel matrisi feature × filter biçiminde tabloya dönüştürüldü. Ardından her feature için filtreler arasındaki maksimum ve ortalama mutlak ağırlık hesaplandı. Bu skorlar kullanılarak feature’lar büyükten küçüğe sıralandı ve feature ranking dosyaları oluşturuldu.
+```powershell
+git clone <REPOSITORY_URL>
+cd Feature_Ranking_Project
 
-Train Mantığı :
-    Bu script iki farklı modda çalışıyor:
+py -3.13 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+```
 
-    original mode
-        Orijinal veri setini yükler, preprocess eder, autoencoder eğitir, test metriğini hesaplar, encoder ağırlıklarından feature ranking çıkarır, sonra bu ranking’e göre filtrelenmiş yeni datasetler üretir.
-    filtered mode
-        Daha önce oluşturulmuş filtrelenmiş datasetlerden birini yükler, tekrar preprocess eder, autoencoder’ı o filtrelenmiş veri üzerinde çalıştırır ve test metriğini hesaplar.
+Confirm that the main script is available:
 
-    Yani mantık şu:
+```bash
+python scripts/run_autoencoder.py --help
+```
 
-    1.Ham veriyle autoencoder eğit
-    2.İlk encoder katmanının ağırlıklarına bak
-    3.Hangi feature daha “güçlü” katkı veriyor diye sırala
-    4.En iyi yüzde kaç feature isteniyorsa seç
-    5.Yeni CSV üret
-    
+`<REPOSITORY_URL>` is a placeholder because the public repository URL is not stored in this project.
 
+## Dataset Format
 
+Place datasets in `data/raw/`. The standard format uses two headerless CSV files:
 
-AutoEncoder Çalışma Mantığı :
+```text
+data/raw/example_data.csv
+data/raw/example_label.csv
+```
 
-    x→Encoder→z→Decoder→x^ (Mantığı)
-    minimize ∣∣x−x^∣∣ (Amaç)
+- `example_data.csv`: rows are samples and columns are features.
+- `example_label.csv`: one label or target value per row.
+- The data and label files must have exactly the same number of rows.
+- Classification labels may be binary or multiclass.
+- Regression labels must be numeric continuous values.
 
-    Autoencoder, veriyi daha düşük boyutlu bir temsile (latent space) sıkıştırıp tekrar orijinaline yakın şekilde yeniden üretmeye çalışır.
-    Bu süreçte model, veriyi en iyi temsil eden özellikleri öğrenir.
-    
-    Input: orijinal feature vektörü
-    Encoder: veriyi daha küçük temsile indirir
-    Bottleneck: sıkıştırılmış özet temsil
-    Decoder: bu özeti kullanıp giriş veriyi tekrar üretmeye çalışır
+Example:
 
-    Örnek:
-        Girişte 30 feature var
-        Encoder bunu 16’ya indirir
-        Sonra 8’e indirir
-        Decoder tekrar 16’ya çıkarır
-        Sonra yeniden 30 feature üretir
+```text
+data/raw/breast_cancer_data.csv
+data/raw/breast_cancer_label.csv
+```
 
-    Burada modelin amacı sınıf tahmini değil,input’u yeniden üretmek
+The command then uses the data filename:
 
-FARKI (CNN - AUTOENCODER)
-    CNN
-        supervised
-        sınıflandırma öğrenir
-        label kullanır
-        ranking, sınıf ayırmaya katkı açısından yorumlanabilir
+```bash
+python scripts/run_autoencoder.py --dataset-name breast_cancer_data.csv
+```
 
-    Autoencoder
-        unsupervised
-        yeniden üretim öğrenir
-        label kullanmaz
-        ranking, veri yapısını temsil etme açısından yorumlanabilir
+## Basic Usage
 
-Bu çok önemli. Çünkü Autoencoder ranking’i şu anlama gelir:
+### Classification
 
-    “Bu feature verinin yapısını yeniden kurmak için ne kadar önemli?”
+Select and evaluate the top 20% of ranked features:
 
-CNN ranking’i ise daha çok şunu söyler:
+```bash
+python scripts/run_autoencoder.py \
+  --dataset-name breast_cancer_data.csv \
+  --task classification \
+  --feature-percent 20 \
+  --random-state 42
+```
 
-    “Bu feature sınıflandırma için ne kadar etkili?
+Run the same experiment repeatedly and save training plots:
 
-K-means ile Cluster Ayarlama : 
+```bash
+python scripts/run_autoencoder.py \
+  --dataset-name breast_cancer_data.csv \
+  --task classification \
+  --feature-percent 60 \
+  --repeat-runs 50 \
+  --random-state 42 \
+  --save-training-plots
+```
 
-    Feature’ları CNN’den elde edilen ağırlık temsillerine göre K-Means ile cluster’la.
-    Sonra her cluster içindeki feature’lar arasından, importance skoru en yüksek olan tek bir feature seç.
-    Böylece hem önemli hem de birbirinden farklı feature’lardan oluşan yeni bir feature set elde et.
-    Weight-based representation + K-Means ile cluster bazlı temsilci feature seçimi:
-    1.Her feature için Conv kernel temsili alınıyor.
-    2.K-Means ile cluster’a ayrılıyor.
-    3.Seçtiğiniz ranking tipine göre importance hesaplanıyor:
-    4.max: cluster_select_representative_features içinde max abs kernel ağırlığı
-    5.avg: cluster_select_representative_features içinde mean abs kernel ağırlığı
-    6.Her cluster’dan en yüksek importance feature seçiliyor. (Exp. count = 3 3 cluster )
+### Regression
 
+```bash
+python scripts/run_autoencoder.py \
+  --dataset-name air_data.csv \
+  --task regression \
+  --feature-percent 30 \
+  --random-state 42 \
+  --save-training-plots
+```
 
-    AUTOENCODER: 
-        1. Original :
+Regression outputs include MSE, RMSE, MAE, R-squared, cosine similarity, and Pearson correlation when they can be calculated.
 
-        python scripts/run_autoencoder.py --dataset-name heart_disease_data.csv --target-column target --id-column none 
+### Clustering
 
-        2. Filtered :
+Automatically evaluate the configured range of cluster counts:
 
-        python scripts/run_autoencoder.py --dataset-name breast_cancer_data.csv --target-column diagnosis --id-column none --feature-percent 10 --random-seed 42 
+```bash
+python scripts/run_autoencoder.py \
+  --dataset-name codon_usage_data.csv \
+  --task clustering \
+  --feature-percent 60 \
+  --random-state 42 \
+  --save-training-plots
+```
 
-        3. 50 kere çalıştır :
+Use a specific number of clusters:
 
-        python scripts/run_autoencoder.py --dataset-name breast_cancer_data.csv --target-column diagnosis --id-column none --feature-percent 30 --random-state none --repeat-runs 50
+```bash
+python scripts/run_autoencoder.py \
+  --dataset-name codon_usage_data.csv \
+  --task clustering \
+  --feature-percent 60 \
+  --cluster-k 8 \
+  --random-state 42 \
+  --save-training-plots
+```
 
-        4. Task
-          python scripts/run_autoencoder.py --dataset-name breast_cancer_data.csv --task clustering
-          python scripts/run_autoencoder.py --dataset-name breast_cancer_data.csv --task classification
-    
-        5. Save History
-           python scripts/run_autoencoder.py --dataset-name breast_cancer_data.csv --save-training-plots
-     
-    "feature_percent": 20.0,
-    "selected_feature_count": 6,
-    "test_mse": 0.5953885912895203,
-    "test_accuracy": 0.9122807017543859,
-    "threshold": 0.5
+Clustering outputs include silhouette scores, WCSS values, elbow/silhouette plots, cluster assignments, and PCA visualizations.
 
-    Purpose: 
-    1.Veriyi yüklemek ve ön işlemek
-    2.Autoencoder eğitmek
-    3.Encoder çıktılarıyla bir sınıflandırıcı eğitmek
-    4.İlk katmandaki ağırlıklardan feature önemini çıkarmak
-    5.En iyi feature’ları seçip yeni bir veri seti oluşturmak
-    6.Bu filtrelenmiş veri setiyle aynı süreci tekrar çalıştırmak
-    7.Eski ve yeni sonuçları dosyaya kaydetmek
+### Run Multiple Feature Percentages
 
-Bu kod, önce veri setini yükleyip ön işleme tabi tutuyor, ardından bir autoencoder eğiterek verinin sıkıştırılmış bir temsilini öğreniyor; sonra encoder çıktıları üzerinde ayrı bir sınıflandırıcı kurup test MSE ve test accuracy değerlerini hesaplıyor. Eğitim tamamlandıktan sonra autoencoder’ın ilk encoder katmanındaki ağırlıkları ve eğitim verisini birlikte kullanarak her feature’ın gizli nöronlara ortalama katkı listesini çıkarıyor, bu katkılardan en güçlü yüzde kadar feature’ı seçip yeni bir filtrelenmiş veri seti oluşturuyor, ardından aynı eğitim ve değerlendirme sürecini bu küçültülmüş veri seti üzerinde tekrar çalıştırıyor. Son olarak hem orijinal veriyle hem de seçilen feature’larla elde edilen performans sonuçlarını JSON ve CSV dosyalarına kaydedip kullanıcıya raporluyor; yani kodun temel amacı autoencoder ile temsil öğrenmek, bu temsilden feature önemini çıkarmak ve feature selection sonrası performansın nasıl değiştiğini karşılaştırmak.
+Use the percentage-sweep option to run the supported feature percentages in sequence:
 
-BİNARY MODEL:
-    0-1 target değerlerinden oluşur ve buna göre işlem yapılır.
+```bash
+python scripts/run_autoencoder.py \
+  --dataset-name arcene_data.csv \
+  --task classification \
+  --feature-percent all \
+  --random-state 42
+```
 
-MULTİ CLASS MODEL:
-    Eğer data multi class ise yani içinde 0-1 dışında daha fazla sınıf barındırıyorsa, her birini binary hale getiriyoruz. Örnek 4 class varsa her birini 0 yapıp diğerlerini 1 yapıp yeni bir label elde ediyoruz. bu örnek için 4 adet yeni label datası elde ediyoruz her birinde ayrı ayrı test ediyoruz. ve en son bir metot ile ortalamalarını alıp bitiricez bu modeli.
+If the installed version does not accept `all`, check the current option name with `--help` before running the sweep.
 
-{
-    "test_mse": 1.04411780834198,
-    "test_accuracy": 0.8360655737704918,
-    "threshold": 0.5,
-    "current_class_label": 0,
-    "class_counts": {
-        "0": 164,
-        "1": 55,
-        "2": 36,
-        "3": 35,
-        "4": 13
-    },
-    "binary_label_counts": {
-        "label_0": 33,  # Test (%20)
-        "label_1": 28   # Test (%20)
-    }
-}
+## Outputs
 
+Classification and regression results are normally stored under:
 
-BÜYÜK VERİLERDE;
-    100000 feature 
-        -> 100 parçaya böl
-        -> her 1000 feature için autoencoder çalıştır
-        -> her parçadan en iyi %20 al (Ağırlık listesine bakarak)
-        -> yaklaşık 20000 feature birleştir
-        -> final autoencoder + classifier çalıştır
-        -> final accuracy ver
+```text
+outputs/autoencoder/<dataset_name>/
+```
 
-Air_data'da -200 label değerleri vardı silindi.
+Clustering results are stored under:
 
-Cluster best k kendi bulsun.
-    python scripts/run_autoencoder.py --dataset-name carcinom_data.csv --feature-percent 90 --task clustering
-Cluster k değerini kendim vereyim.
-    python scripts/run_autoencoder.py --dataset-name carcinom_data.csv --feature-percent 90 --task clustering --cluster-k 6
+```text
+outputs/clustering/<dataset_name>/
+```
+
+Typical files include:
+
+- `first_layer_W_list.csv`: first-layer weights
+- `top_<percentage>_max_abs_features.csv`: ranked and selected features
+- `top_<percentage>_test_metrics.json`: evaluation metrics
+- training-history CSV files
+- accuracy, loss, boxplot, ROC, precision-recall, confusion-matrix, PCA, and clustering figures
+
+The exact files depend on the task and command options.
+
+## Large Datasets
+
+The main script includes feature chunking for very wide datasets. A separate block workflow is also available when the feature matrix is too large to process as one model:
+
+```bash
+python scripts/run_block_feature_selection.py \
+  --dataset-name arcene_data.csv \
+  --target-column target \
+  --id-column none \
+  --block-size 1000 \
+  --feature-percent 20 \
+  --random-state 42
+```
+
+This workflow divides feature columns into blocks, ranks features inside each block, combines the selected features, and evaluates the merged subset.
+
+For the current command-line options of this script, run:
+
+```bash
+python scripts/run_block_feature_selection.py --help
+```
+
+## Dimension Reduction Experiment
+
+Dimension reduction is a separate experiment from FeatureRank:
+
+- FeatureRank selects original feature columns.
+- Dimension reduction creates new latent features from encoder outputs.
+
+Generate reduced datasets for all configured percentages:
+
+```bash
+python scripts/generate_paper_dimension_reduction.py \
+  --dataset-name arcene_data.csv \
+  --retained-percent all \
+  --repeat-runs 50 \
+  --base-seed 42
+```
+
+Evaluate the generated reduced datasets:
+
+```bash
+python scripts/evaluate_paper_dimension_reduction.py \
+  --dataset-name arcene_data
+```
+
+The generation script trains the reduction model using training data and applies the same encoder to unseen test data. The evaluation script reads the generated datasets and reports their performance. Use the same seeds and evaluation settings when comparing this experiment with FeatureRank.
+
+## Reproducing Results
+
+For a repeatable experiment:
+
+1. Use Python 3.13.5 and install the pinned `requirements.txt`.
+2. Use the same dataset files without changing row order or labels.
+3. Set `--random-state 42`, or record the seed used in the paper.
+4. Use the same task, feature percentage, epoch settings, and number of repeats.
+5. Keep the generated JSON metrics and CSV rankings with the experiment record.
+6. Record whether CPU or GPU was used because low-level numerical behavior can differ across systems.
+
+`--repeat-runs` performs repeated train/test experiments. It is not automatically a 5-fold cross-validation experiment. Do not describe it as cross-validation unless a dedicated cross-validation workflow was used.
+
+The main workflow may reuse an existing compatible selected-feature file from the dataset output directory. For a completely fresh ranking experiment, archive the previous dataset output directory before running again.
+
+## Creating Figures
+
+The repository contains scripts named `create_*.py` for publication figures. Their required inputs depend on previously generated experiment outputs.
+
+Examples:
+
+```bash
+python scripts/create_classification_figure.py
+python scripts/create_regression_figure_2.py
+python scripts/create_cluster_figure_1.py
+```
+
+Open each script and update its dataset configuration section before use. Combined figures are generally saved under `outputs/FIGURES/` or `outputs/autoencoder/`.
+
+## Common Problems
+
+### Data and label row counts do not match
+
+Check that `<name>_data.csv` and `<name>_label.csv` contain the same number of rows and do not contain an extra header row.
+
+### Label file cannot be found
+
+Use the expected pair:
+
+```text
+<name>_data.csv
+<name>_label.csv
+```
+
+Both files must be in `data/raw/`.
+
+### TensorFlow cannot be installed
+
+Confirm that the active virtual environment uses the Python version in `.python-version`, then reinstall dependencies inside that environment.
+
+### The process is killed or memory is exhausted
+
+Use the block feature-selection workflow, reduce the block/chunk size, close other memory-intensive programs, or run on a machine with more RAM.
+
+### Results differ between computers
+
+Confirm the Python version, package versions, dataset files, seed, command options, and CPU/GPU environment. Exact neural-network weights are not guaranteed to be identical across different hardware backends.
+
+## Getting Help
+
+Start with the command help:
+
+```bash
+python scripts/run_autoencoder.py --help
+```
+
+Then inspect the JSON metrics and console messages under the relevant dataset output directory. They record the task, selected feature count, evaluation metrics, and generated file paths.
