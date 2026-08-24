@@ -1,3 +1,0 @@
-[0.5]
-Sirali Accuracy: [0.5]
-Ortalama Accuracy: 0.500000

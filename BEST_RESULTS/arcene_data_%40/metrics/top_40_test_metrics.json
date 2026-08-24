@@ -1,7 +1,0 @@
-{
-    "feature_percent": 40.0,
-    "selected_feature_count": 4000,
-    "test_mse": 0.9391540288925171,
-    "test_accuracy": 0.65,
-    "threshold": 0.5
-}

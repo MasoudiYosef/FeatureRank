@@ -1,102 +1,97 @@
 # Feature Ranking Project
 
-This project uses an autoencoder to rank features and evaluate selected feature subsets on classification, regression, and clustering tasks. It also includes separate workflows for large datasets and autoencoder-based dimension reduction.
+This project uses an autoencoder-based workflow for feature ranking, dimension reduction, classification, regression, and clustering experiments. It was developed for an academic study and is organized so that the experiments can be rerun from the command line.
 
-The README focuses on the commands needed to install and run the project. For every available option, use:
+## What This Project Does
 
-```bash
-python scripts/run_autoencoder.py --help
-```
+The main workflow is:
 
-## What the Project Does
+1. Load a dataset from `data/raw/`.
+2. Preprocess the feature matrix and labels.
+3. Train an autoencoder.
+4. Rank features using the learned encoder weights.
+5. Select the requested feature percentage.
+6. Train and evaluate a model using the selected features.
+7. Save metrics, selected features, plots, and experiment outputs.
 
-The main FeatureRank workflow is:
-
-1. Load and preprocess a dataset.
-2. Train an autoencoder without using the target labels.
-3. Calculate feature importance from the first encoder layer weights.
-4. Select the highest-ranked percentage of original features.
-5. Train and evaluate a new model using only the selected features.
-6. Save rankings, metrics, histories, and figures under `outputs/`.
-
-FeatureRank keeps original feature columns. The separate dimension-reduction workflow instead creates new latent features from encoder outputs.
+The project also includes separate scripts for large feature-block experiments and paper-style dimension reduction experiments.
 
 ## Repository Structure
 
 ```text
 Feature_Ranking_Project/
-|-- data/
-|   |-- raw/                         # Input datasets and labels
-|   `-- processed/                   # Generated processed data
-|-- outputs/
-|   |-- autoencoder/                 # Classification and regression results
-|   |-- clustering/                  # Clustering results
-|   `-- FIGURES/                     # Combined publication figures
-|-- scripts/
-|   |-- run_autoencoder.py           # Main experiment script
-|   |-- run_block_feature_selection.py
-|   |-- generate_paper_dimension_reduction.py
-|   |-- evaluate_paper_dimension_reduction.py
-|   `-- create_*.py                  # Figure-generation scripts
-|-- src/                             # Data, preprocessing, model, and utility code
-|-- requirements.txt
-|-- .python-version
-`-- README.md
+├── data/
+│   ├── raw/                         # Input datasets
+│   ├── autoencoder/                 # Selected feature datasets
+│   └── paper_dimension_reduction/   # Generated reduced datasets
+├── outputs/                         # Metrics, plots, and experiment results
+├── scripts/
+│   ├── run_autoencoder.py           # Main experiment script
+│   ├── run_block_feature_selection.py
+│   ├── generate_paper_dimension_reduction.py
+│   ├── evaluate_paper_dimension_reduction.py
+│   └── create_*.py                  # Figure generation scripts
+├── src/                             # Shared project code
+├── requirements.txt
+└── Readme.md
 ```
 
 ## Installation
 
-### Requirements
+Python 3.13 is recommended.
 
-- Python 3.13.5
-- pip
-- A virtual environment is recommended
-- GPU is optional; the project can run on CPU
-
-### macOS or Linux
+### macOS / Linux
 
 ```bash
-git clone <REPOSITORY_URL>
 cd Feature_Ranking_Project
-
-python3.13 -m venv .venv
+python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-### Windows PowerShell
+### Windows
 
 ```powershell
-git clone <REPOSITORY_URL>
 cd Feature_Ranking_Project
-
 py -3.13 -m venv .venv
-.\.venv\Scripts\Activate.ps1
+.\.venv\Scripts\activate
 python -m pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-Confirm that the main script is available:
+Check that the main script works:
 
 ```bash
 python scripts/run_autoencoder.py --help
 ```
 
-`<REPOSITORY_URL>` is a placeholder because the public repository URL is not stored in this project.
-
 ## Dataset Format
 
-Place datasets in `data/raw/`. The standard format uses two headerless CSV files:
+All datasets used in this project should be placed in `data/raw/`.
+
+Most datasets are included in the GitHub repository under:
+
+```text
+data/raw/
+```
+
+The only exception is the Gen Expression dataset, which is not included in the repository because of its large file size. It can be downloaded from the UCI Machine Learning Repository:
+
+[Gene Expression Cancer RNA-Seq Dataset](https://archive.ics.uci.edu/dataset/401/gene+expression+cancer+rna+seq)
+
+After downloading it, place the corresponding data and label files in `data/raw/` using the same naming format used by the project.
+
+The standard format uses two CSV files:
 
 ```text
 data/raw/example_data.csv
 data/raw/example_label.csv
 ```
 
-- `example_data.csv`: rows are samples and columns are features.
+- `example_data.csv`: rows are samples, columns are features.
 - `example_label.csv`: one label or target value per row.
-- The data and label files must have exactly the same number of rows.
+- The data and label files must have the same number of rows.
 - Classification labels may be binary or multiclass.
 - Regression labels must be numeric continuous values.
 
@@ -107,28 +102,7 @@ data/raw/breast_cancer_data.csv
 data/raw/breast_cancer_label.csv
 ```
 
-### Large dataset files
-
-Some datasets used in the experiments may be too large to store directly in the GitHub repository. In that case, the repository can include only the code and README instructions, while the large dataset files are provided through external download links.
-
-After downloading a large dataset, place both files under `data/raw/` using the same naming format:
-
-```text
-data/raw/<dataset_name>_data.csv
-data/raw/<dataset_name>_label.csv
-```
-
-Large dataset links can be listed here:
-
-| Dataset | Data file | Label file |
-| --- | --- | --- |
-| Arcene | `<ARCENE_DATA_LINK>` | `<ARCENE_LABEL_LINK>` |
-| Gen Expression | `<GEN_EXPRESSION_DATA_LINK>` | `<GEN_EXPRESSION_LABEL_LINK>` |
-| Carcinom | `<CARCINOM_DATA_LINK>` | `<CARCINOM_LABEL_LINK>` |
-
-Replace the placeholder links with the actual download links before publishing the repository.
-
-The command then uses the data filename:
+Run it with:
 
 ```bash
 python scripts/run_autoencoder.py --dataset-name breast_cancer_data.csv
@@ -138,26 +112,12 @@ python scripts/run_autoencoder.py --dataset-name breast_cancer_data.csv
 
 ### Classification
 
-Select and evaluate the top 20% of ranked features:
-
 ```bash
 python scripts/run_autoencoder.py \
   --dataset-name breast_cancer_data.csv \
   --task classification \
   --feature-percent 20 \
   --random-state 42
-```
-
-Run the same experiment repeatedly and save training plots:
-
-```bash
-python scripts/run_autoencoder.py \
-  --dataset-name breast_cancer_data.csv \
-  --task classification \
-  --feature-percent 60 \
-  --repeat-runs 50 \
-  --random-state 42 \
-  --save-training-plots
 ```
 
 ### Regression
@@ -167,26 +127,20 @@ python scripts/run_autoencoder.py \
   --dataset-name air_data.csv \
   --task regression \
   --feature-percent 30 \
-  --random-state 42 \
-  --save-training-plots
+  --random-state 42
 ```
 
-Regression outputs include MSE, RMSE, MAE, R-squared, cosine similarity, and Pearson correlation when they can be calculated.
-
 ### Clustering
-
-Automatically evaluate the configured range of cluster counts:
 
 ```bash
 python scripts/run_autoencoder.py \
   --dataset-name codon_usage_data.csv \
   --task clustering \
   --feature-percent 60 \
-  --random-state 42 \
   --save-training-plots
 ```
 
-Use a specific number of clusters:
+To run clustering with a fixed cluster number:
 
 ```bash
 python scripts/run_autoencoder.py \
@@ -194,80 +148,56 @@ python scripts/run_autoencoder.py \
   --task clustering \
   --feature-percent 60 \
   --cluster-k 8 \
-  --random-state 42 \
   --save-training-plots
 ```
 
-Clustering outputs include silhouette scores, WCSS values, elbow/silhouette plots, cluster assignments, and PCA visualizations.
-
-### Run Multiple Feature Percentages
-
-Use the percentage-sweep option to run the supported feature percentages in sequence:
+### Run All Feature Percentages
 
 ```bash
 python scripts/run_autoencoder.py \
-  --dataset-name arcene_data.csv \
+  --dataset-name breast_cancer_data.csv \
   --task classification \
   --feature-percent all \
   --random-state 42
 ```
 
-If the installed version does not accept `all`, check the current option name with `--help` before running the sweep.
-
 ## Outputs
 
-Classification and regression results are normally stored under:
+Results are saved under `outputs/`.
+
+Common output folders:
 
 ```text
 outputs/autoencoder/<dataset_name>/
-```
-
-Clustering results are stored under:
-
-```text
 outputs/clustering/<dataset_name>/
+outputs/paper_dimension_reduction/<dataset_name>/
 ```
 
-Typical files include:
+Common output files include:
 
-- `first_layer_W_list.csv`: first-layer weights
-- `top_<percentage>_max_abs_features.csv`: ranked and selected features
-- `top_<percentage>_test_metrics.json`: evaluation metrics
-- training-history CSV files
-- accuracy, loss, boxplot, ROC, precision-recall, confusion-matrix, PCA, and clustering figures
+- selected feature lists
+- test metric JSON files
+- repeated run text files
+- confusion matrix, ROC, PR, boxplot, convergence, and clustering figures
 
-The exact files depend on the task and command options.
+## Large Feature-Block Workflow
 
-## Large Datasets
-
-The main script includes feature chunking for very wide datasets. A separate block workflow is also available when the feature matrix is too large to process as one model:
+For very wide datasets, the project includes a block-based feature-selection workflow:
 
 ```bash
 python scripts/run_block_feature_selection.py \
-  --dataset-name arcene_data.csv \
-  --target-column target \
-  --id-column none \
-  --block-size 1000 \
-  --feature-percent 20 \
-  --random-state 42
+  --dataset-name gen_expression_data.csv \
+  --feature-percent 10 \
+  --block-count 10
 ```
 
-This workflow divides feature columns into blocks, ranks features inside each block, combines the selected features, and evaluates the merged subset.
+This splits the feature columns into blocks, ranks features inside each block, merges the selected features, and evaluates the final selected feature set.
 
-For the current command-line options of this script, run:
+## Dimension Reduction Workflow
 
-```bash
-python scripts/run_block_feature_selection.py --help
-```
+The paper-style dimension reduction workflow is separated into two scripts.
 
-## Dimension Reduction Experiment
-
-Dimension reduction is a separate experiment from FeatureRank:
-
-- FeatureRank selects original feature columns.
-- Dimension reduction creates new latent features from encoder outputs.
-
-Generate reduced datasets for all configured percentages:
+First, generate reduced datasets:
 
 ```bash
 python scripts/generate_paper_dimension_reduction.py \
@@ -277,79 +207,86 @@ python scripts/generate_paper_dimension_reduction.py \
   --base-seed 42
 ```
 
-Evaluate the generated reduced datasets:
+Then evaluate the generated reduced datasets:
 
 ```bash
 python scripts/evaluate_paper_dimension_reduction.py \
   --dataset-name arcene_data
 ```
 
-The generation script trains the reduction model using training data and applies the same encoder to unseen test data. The evaluation script reads the generated datasets and reports their performance. Use the same seeds and evaluation settings when comparing this experiment with FeatureRank.
+Generated reduced datasets are stored under:
+
+```text
+data/paper_dimension_reduction/
+```
+
+Evaluation results are stored under:
+
+```text
+outputs/paper_dimension_reduction/
+```
 
 ## Reproducing Results
 
-For a repeatable experiment:
+For reproducible experiments:
 
-1. Use Python 3.13.5 and install the pinned `requirements.txt`.
-2. Use the same dataset files without changing row order or labels.
-3. Set `--random-state 42`, or record the seed used in the paper.
-4. Use the same task, feature percentage, epoch settings, and number of repeats.
-5. Keep the generated JSON metrics and CSV rankings with the experiment record.
-6. Record whether CPU or GPU was used because low-level numerical behavior can differ across systems.
+1. Use the same Python version and `requirements.txt`.
+2. Place datasets in `data/raw/` using the expected naming format.
+3. Use the same `--random-state` value.
+4. Use the same feature percentage and model parameters.
+5. Keep previous output folders if you want to reuse existing selected feature lists.
+6. Archive or rename previous output folders if you want to force a fresh run.
 
-`--repeat-runs` performs repeated train/test experiments. It is not automatically a 5-fold cross-validation experiment. Do not describe it as cross-validation unless a dedicated cross-validation workflow was used.
+Repeated runs can be executed with:
 
-The main workflow may reuse an existing compatible selected-feature file from the dataset output directory. For a completely fresh ranking experiment, archive the previous dataset output directory before running again.
+```bash
+python scripts/run_autoencoder.py \
+  --dataset-name breast_cancer_data.csv \
+  --task classification \
+  --feature-percent 60 \
+  --repeat-runs 50 \
+  --random-state none
+```
 
-## Creating Figures
+`--repeat-runs` performs repeated experiments. It is not automatically the same as 5-fold cross-validation unless a script explicitly implements cross-validation.
 
-The repository contains scripts named `create_*.py` for publication figures. Their required inputs depend on previously generated experiment outputs.
+## Figure Scripts
 
-Examples:
+Several scripts under `scripts/` generate publication figures from existing outputs:
 
 ```bash
 python scripts/create_classification_figure.py
 python scripts/create_regression_figure_2.py
 python scripts/create_cluster_figure_1.py
+python scripts/create_cluster_classification_summary_figure.py
 ```
 
-Open each script and update its dataset configuration section before use. Combined figures are generally saved under `outputs/FIGURES/` or `outputs/autoencoder/`.
+These scripts expect the required metric and plot files to already exist under `outputs/`.
 
 ## Common Problems
 
-### Data and label row counts do not match
-
-Check that `<name>_data.csv` and `<name>_label.csv` contain the same number of rows and do not contain an extra header row.
-
 ### Label file cannot be found
 
-Use the expected pair:
+Check that both files exist:
 
 ```text
-<name>_data.csv
-<name>_label.csv
+data/raw/<name>_data.csv
+data/raw/<name>_label.csv
 ```
 
-Both files must be in `data/raw/`.
+### Data and label row counts do not match
+
+Make sure the data and label files have the same number of rows and do not contain an extra header row.
 
 ### TensorFlow cannot be installed
 
-Confirm that the active virtual environment uses the Python version in `.python-version`, then reinstall dependencies inside that environment.
+Check that the active environment uses the expected Python version, then reinstall:
+
+```bash
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+```
 
 ### The process is killed or memory is exhausted
 
-Use the block feature-selection workflow, reduce the block/chunk size, close other memory-intensive programs, or run on a machine with more RAM.
-
-### Results differ between computers
-
-Confirm the Python version, package versions, dataset files, seed, command options, and CPU/GPU environment. Exact neural-network weights are not guaranteed to be identical across different hardware backends.
-
-## Getting Help
-
-Start with the command help:
-
-```bash
-python scripts/run_autoencoder.py --help
-```
-
-Then inspect the JSON metrics and console messages under the relevant dataset output directory. They record the task, selected feature count, evaluation metrics, and generated file paths.
+Use the block feature-selection workflow, reduce the block size, or run the experiment on a machine with more RAM.
