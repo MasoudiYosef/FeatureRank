@@ -21,23 +21,23 @@ The project also includes separate scripts for large feature-block experiments a
 ```text
 Feature_Ranking_Project/
 ├── data/
-│   ├── raw/                         # Input datasets used by the scripts
-│   └── filtered_data/               # Filtered/selected feature datasets
+│   ├── raw/                             # Input datasets used by the scripts
+│   └── filtered/                        # Filtered/selected feature datasets
 ├── outputs/
-│   ├── Classification/              # Classification metrics, plots, and histories
-│   ├── Regression/                  # Regression metrics, plots, and histories
-│   ├── clustering/                  # Clustering metrics and figures
-│   ├── FIGURES/                     # Final paper-ready figures
-│   ├── split_datasets/              # Feature-block split datasets
+│   ├── Classification/                  # Classification metrics, plots, and histories
+│   ├── Regression/                      # Regression metrics, plots, and histories
+│   ├── Clustering/                      # Clustering metrics and figures
+│   ├── FIGURES/                         # Final paper-ready figures
+│   ├── split_datasets/                  # Feature-block split datasets
 │   ├── autoencoder_reduced_datasets/    # Older reduced-dataset outputs
 │   └── autoencoder_reduced_evaluation/  # Older reduced-dataset evaluations
 ├── scripts/
-│   ├── run_autoencoder.py           # Main experiment script
+│   ├── run_autoencoder.py               # Main experiment script
 │   ├── run_block_feature_selection.py
 │   ├── generate_paper_dimension_reduction.py
 │   ├── evaluate_paper_dimension_reduction.py
-│   └── create_*.py                  # Figure generation scripts
-├── src/                             # Shared project code
+│   └── create_*.py                      # Figure generation scripts
+├── src/                                 # Shared project code
 ├── GPU_SETUP.md
 ├── DIMENSION_REDUCTION_WORKFLOW.md
 ├── requirements-gpu.txt
@@ -49,7 +49,7 @@ The repository may also contain older experiment folders such as `outputs/autoen
 
 ## Installation
 
-Python 3.13 is recommended.
+Python 3.13.5 is recommended.
 
 ### macOS / Linux
 
@@ -184,7 +184,7 @@ outputs/
 │   └── <dataset_name>/
 ├── Regression/
 │   └── <dataset_name>/
-├── clustering/
+├── Clustering/
 │   └── <dataset_name>/
 ├── FIGURES/
 ├── split_datasets/

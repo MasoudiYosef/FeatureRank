@@ -108,7 +108,7 @@ PCA_CLUSTER_CMAP = ListedColormap(
 OUTPUT_ROOT = Path("outputs")
 CLASSIFICATION_OUTPUT_ROOT = OUTPUT_ROOT / "Classification"
 REGRESSION_OUTPUT_ROOT = OUTPUT_ROOT / "Regression"
-CLUSTERING_OUTPUT_ROOT = OUTPUT_ROOT / "clustering"
+CLUSTERING_OUTPUT_ROOT = OUTPUT_ROOT / "Clustering"
 
 
 def classification_output_dir(dataset_folder: str | Path) -> Path:
