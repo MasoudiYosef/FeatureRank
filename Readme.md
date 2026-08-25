@@ -193,7 +193,10 @@ outputs/
 ```
 
 
-<img width="1332" height="316" alt="breast_cancer_60_result" src="https://github.com/user-attachments/assets/a3363e41-787b-414e-9877-611180485ec2" />
+<img width="1334" height="159" alt="Breast_cancer_input" src="https://github.com/user-attachments/assets/b4fd051b-4add-4b48-b3d2-e28d01cf860b" />
+
+<img width="1336" height="320" alt="Breast_cancer_60_result" src="https://github.com/user-attachments/assets/9107c4f3-7938-4867-8008-efe64fd4092e" />
+
 
 
 
