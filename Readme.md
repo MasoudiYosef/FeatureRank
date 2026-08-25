@@ -192,7 +192,10 @@ outputs/
 └── autoencoder_reduced_evaluation/  # Older reduced-dataset evaluations may exist
 ```
 
-<img width="1380" height="209" alt="breast_cancer_70_result" src="https://github.com/user-attachments/assets/768d4eac-e928-4b50-a6ed-49e44b856d23" />
+
+<img width="1364" height="187" alt="breast_cancer_70_result" src="https://github.com/user-attachments/assets/1cd37d2f-5fd4-4172-9442-95c2b27524ec" />
+
+
 
 
 Common output files include:
