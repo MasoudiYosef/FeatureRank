@@ -35,8 +35,7 @@ Feature_Ranking_Project/
 │   ├── run_autoencoder.py               # Main experiment script
 │   ├── run_block_feature_selection.py
 │   ├── generate_paper_dimension_reduction.py
-│   ├── evaluate_paper_dimension_reduction.py
-│   └── create_*.py                      # Figure generation scripts
+│   └── evaluate_paper_dimension_reduction.py                   
 ├── src/                                 # Shared project code
 ├── GPU_SETUP.md
 ├── DIMENSION_REDUCTION_WORKFLOW.md
@@ -192,6 +191,9 @@ outputs/
 ├── autoencoder_reduced_datasets/    # Older reduced-dataset outputs may exist
 └── autoencoder_reduced_evaluation/  # Older reduced-dataset evaluations may exist
 ```
+
+<img width="1380" height="209" alt="breast_cancer_70_result" src="https://github.com/user-attachments/assets/768d4eac-e928-4b50-a6ed-49e44b856d23" />
+
 
 Common output files include:
 
