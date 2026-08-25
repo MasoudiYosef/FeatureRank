@@ -186,7 +186,7 @@ outputs/
 ├── Clustering/
 │   └── <dataset_name>/
 ├── FIGURES/
-├── split_datasets/
+├── split_datasets/                  # Feature-block split datasets
 ├── paper_dimension_reduction/       # Created by paper dimension-reduction scripts
 ├── autoencoder_reduced_datasets/    # Older reduced-dataset outputs may exist
 └── autoencoder_reduced_evaluation/  # Older reduced-dataset evaluations may exist
