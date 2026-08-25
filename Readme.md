@@ -193,7 +193,8 @@ outputs/
 ```
 
 
-![Uploading breast_cancer_60_result.png…]()
+<img width="1332" height="316" alt="breast_cancer_60_result" src="https://github.com/user-attachments/assets/a3363e41-787b-414e-9877-611180485ec2" />
+
 
 
 
