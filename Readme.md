@@ -24,28 +24,6 @@ The existing task implementations are reused by both modes. The command line
 is intentionally compact; model and training defaults are kept centrally in
 [src/config.py](src/config.py).
 
-## Method overview
-
-### FeatureRank score
-
-For each sample s, input feature i, and first encoder neuron j, the pipeline
-calculates the sample-weighted contribution:
-
-~~~
-C(i, j) = mean_s( | X(s, i) x W(i, j) | )
-~~~
-
-where W is the weight matrix of the first encoder layer. The feature score is
-the largest contribution across encoder neurons:
-
-~~~
-Score(i) = max_j C(i, j)
-~~~
-
-Features are sorted by this score. For a requested percentage p, the selected
-count is ceil(number_of_features x p / 100), with at least one feature
-selected. The exact implementation is in
-[src/autoencoder_feature_selection.py](src/autoencoder_feature_selection.py).
 
 ### Common preprocessing
 
@@ -173,30 +151,6 @@ and `DocumentAutoencoderSettings`). This keeps function calls short while
 leaving every default and random seed explicit and reproducible. The objects do
 not introduce a new algorithm; they only carry the same values that the
 previous long argument lists carried.
-
-## Installation
-
-Python 3.13 is the recommended version.
-
-### macOS and Linux
-
-~~~
-cd /path/to/Feature_Ranking_Project
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install --upgrade pip
-pip install -r requirements.txt
-~~~
-
-### Windows PowerShell
-
-~~~
-cd C:\path\to\Feature_Ranking_Project
-py -3.13 -m venv .venv
-.\.venv\Scripts\activate
-python -m pip install --upgrade pip
-pip install -r requirements.txt
-~~~
 
 Optional GPU dependencies are listed in requirements-gpu.txt. See
 [GPU_SETUP.md](GPU_SETUP.md) for environment-specific instructions.
