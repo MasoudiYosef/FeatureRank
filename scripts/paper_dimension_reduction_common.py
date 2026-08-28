@@ -3,11 +3,13 @@ from __future__ import annotations
 import json
 import random
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import tensorflow as tf
+from sklearn.model_selection import train_test_split
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = SCRIPT_DIR.parent
@@ -16,7 +18,7 @@ if str(PROJECT_ROOT) not in sys.path:
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-import run_autoencoder as ra
+from src.runtime import set_reproducible
 
 
 DEFAULT_DECODING_DIM = 128
@@ -24,18 +26,28 @@ DEFAULT_FACTORIZATION_RANK = 128
 DEFAULT_MAX_DENSE_WEIGHTS = 5_000_000
 
 
+@dataclass(frozen=True)
+class DocumentAutoencoderSettings:
+    """Architecture and training options for the document-aligned model."""
+
+    encoding_dim: int
+    decoding_dim: int = DEFAULT_DECODING_DIM
+    encoding_activation: str = "relu"
+    decoding_activation: str = "relu"
+    learning_rate: float = 0.0001
+    encoding_implementation: str = "auto"
+    factorization_rank: int = DEFAULT_FACTORIZATION_RANK
+    max_dense_weights: int = DEFAULT_MAX_DENSE_WEIGHTS
+    epochs: int = 50
+    batch_size: int = 8
+    validation_split: float = 0.1
+    verbose: int = 1
+
+
 def set_seed(seed: int) -> None:
-    ra.set_reproducible(seed)
+    set_reproducible(seed)
     random.seed(seed)
     np.random.seed(seed)
-
-
-def normalize_id_column(value: str | None) -> str | None:
-    if value is None:
-        return None
-    if str(value).strip().lower() in {"none", "null", "-", ""}:
-        return None
-    return value
 
 
 def parse_retained_percentages(text: str) -> list[int]:
@@ -82,7 +94,13 @@ class FactorizedEncoding(tf.keras.layers.Layer):
     Strict full Dense istenirse --encoding-implementation dense kullanilabilir.
     """
 
-    def __init__(self, units: int, rank: int = DEFAULT_FACTORIZATION_RANK, activation="relu", **kwargs):
+    def __init__(
+        self,
+        units: int,
+        rank: int = DEFAULT_FACTORIZATION_RANK,
+        activation="relu",
+        **kwargs,
+    ):
         super().__init__(**kwargs)
         self.units = int(units)
         self.rank = int(rank)
@@ -121,7 +139,6 @@ class FactorizedEncoding(tf.keras.layers.Layer):
         return x
 
 
-
 def estimate_dense_memory_gb(
     input_dim: int,
     encoding_dim: int,
@@ -129,7 +146,7 @@ def estimate_dense_memory_gb(
     training_multiplier: float = 4.0,
 ) -> float:
     params = int(input_dim) * int(encoding_dim)
-    return float(params * bytes_per_parameter * training_multiplier / (1024 ** 3))
+    return float(params * bytes_per_parameter * training_multiplier / (1024**3))
 
 
 def choose_encoding_implementation(
@@ -151,14 +168,7 @@ def choose_encoding_implementation(
 
 def build_document_aligned_autoencoder(
     input_dim: int,
-    encoding_dim: int,
-    decoding_dim: int = DEFAULT_DECODING_DIM,
-    encoding_activation: str = "relu",
-    decoding_activation: str = "relu",
-    learning_rate: float = 0.0001,
-    encoding_implementation: str = "auto",
-    factorization_rank: int = DEFAULT_FACTORIZATION_RANK,
-    max_dense_weights: int = DEFAULT_MAX_DENSE_WEIGHTS,
+    settings: DocumentAutoencoderSettings,
 ):
     """
     Dokumandaki 4-layer conceptual mimari:
@@ -168,7 +178,7 @@ def build_document_aligned_autoencoder(
     Reduced representation = encoding_layer output.
     """
 
-    if input_dim <= 0 or encoding_dim <= 0 or decoding_dim <= 0:
+    if input_dim <= 0 or settings.encoding_dim <= 0 or settings.decoding_dim <= 0:
         raise ValueError("input_dim, encoding_dim ve decoding_dim pozitif olmali.")
 
     inputs = tf.keras.layers.Input(
@@ -182,28 +192,28 @@ def build_document_aligned_autoencoder(
     # katmani atlanmaz ve identity ozel-durumu kullanilmaz.
     implementation = choose_encoding_implementation(
         input_dim=input_dim,
-        encoding_dim=encoding_dim,
-        requested=encoding_implementation,
-        max_dense_weights=max_dense_weights,
+        encoding_dim=settings.encoding_dim,
+        requested=settings.encoding_implementation,
+        max_dense_weights=settings.max_dense_weights,
     )
 
     if implementation == "dense":
         encoded = tf.keras.layers.Dense(
-            encoding_dim,
-            activation=encoding_activation,
+            settings.encoding_dim,
+            activation=settings.encoding_activation,
             name="encoding_layer",
         )(inputs)
     else:
         encoded = FactorizedEncoding(
-            encoding_dim,
-            rank=factorization_rank,
-            activation=encoding_activation,
+            settings.encoding_dim,
+            rank=settings.factorization_rank,
+            activation=settings.encoding_activation,
             name="encoding_layer",
         )(inputs)
 
     decoded = tf.keras.layers.Dense(
-        decoding_dim,
-        activation=decoding_activation,
+        settings.decoding_dim,
+        activation=settings.decoding_activation,
         name="decoding_layer",
     )(encoded)
 
@@ -226,7 +236,7 @@ def build_document_aligned_autoencoder(
 
     autoencoder.compile(
         optimizer=tf.keras.optimizers.Adam(
-            learning_rate=learning_rate,
+            learning_rate=settings.learning_rate,
             clipnorm=1.0,
         ),
         loss="mse",
@@ -240,51 +250,32 @@ def fit_document_aligned_autoencoder(
     X_train_scaled: np.ndarray,
     X_test_scaled: np.ndarray,
     y_train: np.ndarray,
-    encoding_dim: int,
+    settings: DocumentAutoencoderSettings,
     seed: int,
-    epochs: int,
-    batch_size: int,
-    validation_split: float,
-    decoding_dim: int,
-    encoding_activation: str,
-    decoding_activation: str,
-    learning_rate: float,
-    encoding_implementation: str,
-    factorization_rank: int,
-    max_dense_weights: int,
-    verbose: int = 1,
 ):
     set_seed(seed)
 
-    X_train_sub, X_val, _, _ = ra.train_test_split(
+    X_train_sub, X_val, _, _ = train_test_split(
         X_train_scaled,
         y_train,
-        test_size=validation_split,
+        test_size=settings.validation_split,
         random_state=seed,
         shuffle=True,
         stratify=y_train,
     )
 
     autoencoder, encoder, implementation = build_document_aligned_autoencoder(
-        input_dim=X_train_scaled.shape[1],
-        encoding_dim=encoding_dim,
-        decoding_dim=decoding_dim,
-        encoding_activation=encoding_activation,
-        decoding_activation=decoding_activation,
-        learning_rate=learning_rate,
-        encoding_implementation=encoding_implementation,
-        factorization_rank=factorization_rank,
-        max_dense_weights=max_dense_weights,
+        input_dim=X_train_scaled.shape[1], settings=settings
     )
 
     history = autoencoder.fit(
         X_train_sub.astype(np.float32),
         X_train_sub.astype(np.float32),
         validation_data=(X_val.astype(np.float32), X_val.astype(np.float32)),
-        epochs=epochs,
-        batch_size=batch_size,
+        epochs=settings.epochs,
+        batch_size=settings.batch_size,
         shuffle=False,
-        verbose=verbose,
+        verbose=settings.verbose,
     )
 
     X_test_scaled = X_test_scaled.astype(np.float32)
@@ -306,9 +297,9 @@ def fit_document_aligned_autoencoder(
         verbose=0,
     ).astype(np.float32)
 
-    if X_train_encoded.shape[1] != encoding_dim:
+    if X_train_encoded.shape[1] != settings.encoding_dim:
         raise RuntimeError(
-            f"Encoding output dimension mismatch: expected={encoding_dim}, "
+            f"Encoding output dimension mismatch: expected={settings.encoding_dim}, "
             f"actual={X_train_encoded.shape[1]}"
         )
 

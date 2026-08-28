@@ -1,17 +1,17 @@
-""""" Info: Data loader dosyası, veri setini yüklemek ve temel veri kontrolü yapmak için kullanılır.
-"""
+"""Load raw CSV/TXT datasets using the project's naming conventions."""
 
-from pathlib import Path
-from io import StringIO
 import re
+from io import StringIO
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 from pandas.errors import ParserError
-from src.config import get_data
+from src.config import TARGET_COLUMN, get_data
 
 
 def _read_txt_table(path: Path) -> pd.DataFrame:
+    """Read a text table while accepting the formats used by raw datasets."""
     for sep, kwargs in [
         ("\t", {"header": None}),
         (r"\s+", {"header": None, "engine": "python"}),
@@ -27,6 +27,7 @@ def _read_txt_table(path: Path) -> pd.DataFrame:
 
 
 def convert_txt_dataset_to_csv(dataset_name: str) -> str:
+    """Convert a paired ``*_data.txt``/``*_label.txt`` dataset to CSV files."""
     if not dataset_name.lower().endswith(".txt"):
         return dataset_name if dataset_name.lower().endswith(".csv") else f"{dataset_name}.csv"
 
@@ -36,7 +37,9 @@ def convert_txt_dataset_to_csv(dataset_name: str) -> str:
         raise FileNotFoundError(f"Data txt dosyasi bulunamadi: {data_txt}")
 
     if "_data" not in data_txt.stem:
-        raise ValueError("TXT data dosyasi adinda '_data' olmasi gerekiyor. Ornek: breast_cancer_data2.txt")
+        raise ValueError(
+            "TXT data dosyasi adinda '_data' olmasi gerekiyor. Ornek: breast_cancer_data2.txt"
+        )
 
     label_txt_name = data_txt.name.replace("_data", "_label", 1)
     label_txt = raw_dir / label_txt_name
@@ -57,12 +60,13 @@ def convert_txt_dataset_to_csv(dataset_name: str) -> str:
     return data_csv.name
 
 
-def _normalize_csv_to_comma(path, df: pd.DataFrame) -> None:
-    # Ham dosyayı tek standarda çeker: ',' delimiter ve '.' decimal.
+def _normalize_csv_to_comma(path: Path, df: pd.DataFrame) -> None:
+    """Rewrite a parsed fallback table using the project's CSV format."""
     df.to_csv(path, index=False)
 
 
-def _are_all_columns_numeric_like(columns) -> bool:
+def _are_all_columns_numeric_like(columns: list[object]) -> bool:
+    """Return whether every column name can be interpreted as a number."""
     for col in columns:
         text = str(col).strip().replace(",", ".")
         try:
@@ -75,18 +79,13 @@ def _are_all_columns_numeric_like(columns) -> bool:
 def _build_label_filename(dataset_name: str) -> str:
     if not dataset_name.endswith("_data.csv"):
         raise ValueError(
-            "Raw dataset adı 'dataset_name_data.csv' formatında olmalı. "
-            f"Gelen: {dataset_name}"
+            "Raw dataset adı 'dataset_name_data.csv' formatında olmalı. " f"Gelen: {dataset_name}"
         )
     return dataset_name.replace("_data.csv", "_label.csv")
 
 
 def _read_csv_with_scientific_comma_fix(path: Path, is_feature_file: bool = False) -> pd.DataFrame:
-    """
-    Bazi ham CSV dosyalarinda bilimsel gosterimde ondalik virgul kullaniliyor
-    (ornek: 5,00E-04). Bu durum delimiter olan ',' ile cakisip parser hatasi
-    uretebiliyor. Yalnizca bu paterni 5.00E-04 formatina cevirip tekrar parse eder.
-    """
+    """Fix scientific decimal commas before parsing a malformed CSV."""
     raw_text = path.read_text(encoding="utf-8", errors="ignore")
     fixed_text = re.sub(r"(?<=\d),(?=\d+E[+-]?\d+)", ".", raw_text, flags=re.IGNORECASE)
 
@@ -148,7 +147,8 @@ def _parse_sparse_index_feature_file(path: Path) -> pd.DataFrame | None:
     return pd.DataFrame(data, columns=columns)
 
 
-def _read_csv_flexible(path, is_feature_file: bool = False) -> pd.DataFrame:
+def _read_csv_flexible(path: Path, is_feature_file: bool = False) -> pd.DataFrame:
+    """Read a feature or label file using the project's fallback parsers."""
     try:
         if is_feature_file:
             path_obj = Path(path)
@@ -177,10 +177,10 @@ def _read_csv_flexible(path, is_feature_file: bool = False) -> pd.DataFrame:
 
         # 2) Fallback: bazi dosyalar ';' ayrac ve ',' ondalik ile geliyor.
         if is_feature_file:
-            df = pd.read_csv(path, sep=';', decimal=',', header=None)
+            df = pd.read_csv(path, sep=";", decimal=",", header=None)
             df.columns = [f"feature_{i+1}" for i in range(df.shape[1])]
         else:
-            df = pd.read_csv(path, sep=';', decimal=',', header=None)
+            df = pd.read_csv(path, sep=";", decimal=",", header=None)
 
         _normalize_csv_to_comma(path, df)
         return df
@@ -191,42 +191,51 @@ def load_data(
     model_name: str = "",
     dataset_name_folder: str = "",
     folder: str = "raw",
-    target_column: str = "diagnosis",
+    target_column: str = TARGET_COLUMN,
 ) -> pd.DataFrame:
+    """Load a raw paired dataset or a previously generated CSV dataset."""
     if folder != "raw":
-        return pd.read_csv(get_data(dataset_name, model_name=model_name, dataset_name_folder=dataset_name_folder, folder=folder))
+        return pd.read_csv(
+            get_data(
+                dataset_name,
+                model_name=model_name,
+                dataset_name_folder=dataset_name_folder,
+                folder=folder,
+            )
+        )
 
     data_path = get_data(dataset_name, folder="raw")
     label_name = _build_label_filename(dataset_name)
     label_path = get_data(label_name, folder="raw")
 
-    df_data = _read_csv_flexible(data_path, is_feature_file=True)
-    df_label = _read_csv_flexible(label_path, is_feature_file=False)
+    features = _read_csv_flexible(data_path, is_feature_file=True)
+    labels = _read_csv_flexible(label_path, is_feature_file=False)
 
-    if df_label.shape[1] != 1:
+    if labels.shape[1] != 1:
         raise ValueError(
-            f"Label dosyasında tek kolon olmalı. Dosya: {label_name}, kolon sayısı: {df_label.shape[1]}"
+            f"Label dosyasında tek kolon olmalı. Dosya: {label_name}, kolon sayısı: {labels.shape[1]}"
         )
 
-    if len(df_label) == len(df_data) + 1:
+    if len(labels) == len(features) + 1:
         print(
             f"[WARN] Label dosyasi data'dan 1 satir fazla. "
-            f"Fazla son label satiri yok sayiliyor: data={len(df_data)}, label={len(df_label)}"
+            f"Fazla son label satiri yok sayiliyor: data={len(features)}, label={len(labels)}"
         )
-        df_label = df_label.iloc[: len(df_data)].reset_index(drop=True)
+        labels = labels.iloc[: len(features)].reset_index(drop=True)
 
-    if len(df_data) != len(df_label):
+    if len(features) != len(labels):
         raise ValueError(
-            f"Data ve label satır sayısı eşleşmiyor. data={len(df_data)}, label={len(df_label)}"
+            f"Data ve label satır sayısı eşleşmiyor. data={len(features)}, label={len(labels)}"
         )
 
-    label_col = df_label.columns[0]
-    df_label = df_label.rename(columns={label_col: target_column})
+    label_col = labels.columns[0]
+    labels = labels.rename(columns={label_col: target_column})
 
-    return pd.concat([df_data, df_label], axis=1)
+    return pd.concat([features, labels], axis=1)
 
 
 def basic_info(df: pd.DataFrame) -> None:
+    """Print a compact overview useful when checking a newly loaded dataset."""
     print("\n--- İlk 5 Satır ---")
     print(df.head())
 

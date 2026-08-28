@@ -1,3 +1,5 @@
+"""FeatureRank's contribution score, selection, and filtered-dataset helpers."""
+
 from __future__ import annotations
 
 import ast
@@ -9,9 +11,77 @@ import pandas as pd
 
 
 def validate_feature_percent(feature_percent: float) -> float:
+    """Validate and return a requested top-feature percentage."""
     if feature_percent <= 0 or feature_percent > 100:
         raise ValueError("feature-percent 0 ile 100 arasında olmalı (100 dahil).")
     return feature_percent
+
+
+def load_selected_features_if_compatible(
+    selected_features_path: Path, feature_names: list[str]
+) -> pd.DataFrame | None:
+    """Load a saved ranking only when all names belong to the current dataset."""
+    selected_df = pd.read_csv(selected_features_path)
+    if "feature_name" not in selected_df.columns:
+        print(
+            f"[WARN] Feature listesi uyumsuz, 'feature_name' kolonu yok: {selected_features_path}"
+        )
+        return None
+
+    feature_name_set = set(feature_names)
+    missing_features = [
+        name for name in selected_df["feature_name"].tolist() if name not in feature_name_set
+    ]
+    if missing_features:
+        print(
+            f"[WARN] Feature listesi mevcut dataset ile uyumsuz: {selected_features_path}. "
+            f"Eksik feature sayisi: {len(missing_features)}. Ornek: {missing_features[:5]}. "
+            "Bu liste atlanacak."
+        )
+        return None
+    return selected_df
+
+
+def save_sample_weighted_contributions(
+    autoencoder,
+    X_train_sub: np.ndarray,
+    feature_names: list[str],
+    output_path: Path,
+) -> pd.DataFrame:
+    """Save FeatureRank's canonical first-layer sample-weighted contributions.
+
+    For feature ``i`` and hidden unit ``j`` the value is::
+
+        mean_over_samples(abs(X_train_sub[sample, i] * W[i, j]))
+
+    Keeping this formula next to ranking and selection makes the complete
+    FeatureRank method discoverable in one module.
+    """
+    weights = autoencoder.get_layer("enc_dense_1").get_weights()[0]
+    if X_train_sub.ndim != 2:
+        raise ValueError(f"X_train_sub 2 boyutlu olmali, gelen shape: {X_train_sub.shape}")
+    if weights.shape[0] != X_train_sub.shape[1]:
+        raise ValueError(
+            "X_train feature boyutu "
+            f"({X_train_sub.shape[1]}) ile agirlik satir sayisi "
+            f"({weights.shape[0]}) eslesmiyor."
+        )
+    if len(feature_names) != X_train_sub.shape[1]:
+        raise ValueError(
+            f"Feature adi sayisi ({len(feature_names)}) ile veri boyutu "
+            f"({X_train_sub.shape[1]}) eslesmiyor."
+        )
+
+    contributions = np.abs(X_train_sub[:, :, np.newaxis] * weights[np.newaxis, :, :])
+    weighted = np.mean(contributions, axis=0)
+    contribution_df = pd.DataFrame(
+        {
+            "feature": [f"F{i + 1}" for i in range(weighted.shape[0])],
+            "weight_list": [weighted[i].tolist() for i in range(weighted.shape[0])],
+        }
+    )
+    contribution_df.to_csv(output_path, index=False)
+    return contribution_df
 
 
 def save_top_percent_features_by_abs_max_weight(
@@ -67,19 +137,14 @@ def save_filtered_dataset_from_selected_features(
     output_path: Path,
     id_column: str | None = None,
 ) -> pd.DataFrame:
-    """
-    Seçilen feature listesini kullanarak dataset'i filtreler ve CSV olarak kaydeder.
-    Kolon sırası: id (varsa), seçilen feature'lar, target.
-    """
+    """Save ID (when present), selected features, and target in that order."""
     if "feature_name" not in selected_df.columns:
         raise ValueError("selected_df içinde 'feature_name' kolonu bulunmalı.")
 
     selected_features = selected_df["feature_name"].tolist()
     missing_features = [col for col in selected_features if col not in full_df.columns]
     if missing_features:
-        raise ValueError(
-            f"Seçilen feature'lar dataset içinde bulunamadı: {missing_features}"
-        )
+        raise ValueError(f"Seçilen feature'lar dataset içinde bulunamadı: {missing_features}")
 
     if target_column not in full_df.columns:
         raise ValueError(f"Target kolonu dataset içinde bulunamadı: {target_column}")

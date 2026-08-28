@@ -17,7 +17,7 @@ import math
 import os
 import sys
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -38,17 +38,16 @@ from src.models import build_sigmoid_autoencoder
 
 from run_dimension_reduction import (
     FiniteLossGuard,
-    configure_tensorflow_device,
     format_percentage,
     load_raw_classification_dataset,
-    parse_hidden_units,
     parse_percentages,
     parse_random_state,
     prepare_indexed_split,
     repeated_metric_statistics,
-    set_reproducible,
     train_classifier,
 )
+from src.runtime import configure_tensorflow_device, set_reproducible
+from src.utils import parse_hidden_units
 
 
 DEFAULT_ENCODING_DIM = 8
@@ -57,6 +56,24 @@ DEFAULT_CLASSIFIER_EPOCHS = 50
 DEFAULT_BATCH_SIZE = 16
 DEFAULT_VALIDATION_SIZE = 0.1
 DEFAULT_LEARNING_RATE = 0.001
+
+
+@dataclass(frozen=True)
+class TrainingSettings:
+    """Model settings shared by ranking and selected-feature evaluation."""
+
+    encoding_dim: int
+    autoencoder_epochs: int
+    classifier_model: str
+    classifier_hidden_units: tuple[int, ...]
+    classifier_learning_rate: float
+    classifier_epochs: int
+    validation_size: float
+    batch_size: int
+    autoencoder_early_stopping_patience: int
+    classifier_early_stopping_patience: int
+    classifier_input: str
+    verbose: int
 
 
 @dataclass(frozen=True)
@@ -119,19 +136,14 @@ def split_inner_train_validation(
 def train_feature_rank_autoencoder(
     X_train: np.ndarray,
     y_train: np.ndarray,
-    encoding_dim: int,
-    epochs: int,
-    batch_size: int,
-    validation_size: float,
-    early_stopping_patience: int,
+    settings: TrainingSettings,
     random_state: int,
-    verbose: int,
 ) -> tuple[tf.keras.Model, tf.keras.Model, np.ndarray, int, int, int]:
     """Fit one project-compatible Autoencoder without touching outer test."""
     X_fit, X_validation, _, _ = split_inner_train_validation(
         X_train,
         y_train,
-        validation_size=validation_size,
+        validation_size=settings.validation_size,
         random_state=random_state,
     )
     tf.keras.backend.clear_session()
@@ -139,16 +151,16 @@ def train_feature_rank_autoencoder(
     set_reproducible(random_state)
     autoencoder, encoder = build_sigmoid_autoencoder(
         input_dim=int(X_train.shape[1]),
-        encoding_dim=int(encoding_dim),
+        encoding_dim=int(settings.encoding_dim),
         activation="sigmoid",
     )
     callbacks: list[tf.keras.callbacks.Callback] = [FiniteLossGuard()]
-    if early_stopping_patience > 0:
+    if settings.autoencoder_early_stopping_patience > 0:
         callbacks.append(
             tf.keras.callbacks.EarlyStopping(
                 monitor="val_loss",
                 mode="min",
-                patience=early_stopping_patience,
+                patience=settings.autoencoder_early_stopping_patience,
                 restore_best_weights=True,
                 verbose=1,
             )
@@ -157,11 +169,11 @@ def train_feature_rank_autoencoder(
         X_fit.astype(np.float32),
         X_fit.astype(np.float32),
         validation_data=(X_validation.astype(np.float32), X_validation.astype(np.float32)),
-        epochs=epochs,
-        batch_size=batch_size,
+        epochs=settings.autoencoder_epochs,
+        batch_size=settings.batch_size,
         shuffle=False,
         callbacks=callbacks,
-        verbose=verbose,
+        verbose=settings.verbose,
     )
     losses = np.asarray(history.history.get("loss", []), dtype=np.float64)
     if losses.size == 0 or not np.isfinite(losses).all():
@@ -198,40 +210,31 @@ def evaluate_selected_features(
     y_train: np.ndarray,
     y_test: np.ndarray,
     selected_indices: np.ndarray,
-    encoding_dim: int,
-    autoencoder_epochs: int,
-    classifier_model: str,
-    classifier_hidden_units: tuple[int, ...],
-    classifier_learning_rate: float,
-    classifier_epochs: int,
-    validation_size: float,
-    batch_size: int,
-    autoencoder_early_stopping_patience: int,
-    classifier_early_stopping_patience: int,
-    classifier_input: str,
+    settings: TrainingSettings,
     random_state: int,
-    verbose: int,
 ) -> tuple[dict[str, float | str], dict[str, int | None]]:
     selected_X_train = X_train[:, selected_indices].astype(np.float32)
     selected_X_test = X_test[:, selected_indices].astype(np.float32)
-    classifier_input = str(classifier_input).strip().lower()
+    classifier_input = str(settings.classifier_input).strip().lower()
 
     if classifier_input == "selected_features":
         set_reproducible(random_state + 1)
-        metrics, classifier_epochs_completed, classifier_fit_count, classifier_validation_count = train_classifier(
-            X_train=selected_X_train,
-            X_test=selected_X_test,
-            y_train=y_train,
-            y_test=y_test,
-            classifier_model=classifier_model,
-            hidden_units=classifier_hidden_units,
-            learning_rate=classifier_learning_rate,
-            epochs=classifier_epochs,
-            batch_size=batch_size,
-            early_stopping_patience=classifier_early_stopping_patience,
-            validation_size=validation_size,
-            random_state=random_state + 1,
-            verbose=verbose,
+        metrics, classifier_epochs_completed, classifier_fit_count, classifier_validation_count = (
+            train_classifier(
+                X_train=selected_X_train,
+                X_test=selected_X_test,
+                y_train=y_train,
+                y_test=y_test,
+                classifier_model=settings.classifier_model,
+                hidden_units=settings.classifier_hidden_units,
+                learning_rate=settings.classifier_learning_rate,
+                epochs=settings.classifier_epochs,
+                batch_size=settings.batch_size,
+                early_stopping_patience=settings.classifier_early_stopping_patience,
+                validation_size=settings.validation_size,
+                random_state=random_state + 1,
+                verbose=settings.verbose,
+            )
         )
         counts: dict[str, int | None] = {
             "selected_encoding_dim": int(selected_X_train.shape[1]),
@@ -247,26 +250,24 @@ def evaluate_selected_features(
     if classifier_input != "second_autoencoder":
         raise ValueError(f"Desteklenmeyen classifier input modu: {classifier_input}")
 
-    selected_encoding_dim = min(int(encoding_dim), int(selected_X_train.shape[1]))
+    selected_encoding_dim = min(int(settings.encoding_dim), int(selected_X_train.shape[1]))
 
     autoencoder, encoder, _, ae_fit_count, ae_validation_count, ae_epochs_completed = (
         train_feature_rank_autoencoder(
             X_train=selected_X_train,
             y_train=y_train,
             encoding_dim=selected_encoding_dim,
-            epochs=autoencoder_epochs,
-            batch_size=batch_size,
-            validation_size=validation_size,
-            early_stopping_patience=autoencoder_early_stopping_patience,
+            settings=replace(settings, encoding_dim=selected_encoding_dim),
             random_state=random_state,
-            verbose=verbose,
         )
     )
     encoded_X_train = np.asarray(
-        encoder.predict(selected_X_train, batch_size=batch_size, verbose=0), dtype=np.float32
+        encoder.predict(selected_X_train, batch_size=settings.batch_size, verbose=0),
+        dtype=np.float32,
     )
     encoded_X_test = np.asarray(
-        encoder.predict(selected_X_test, batch_size=batch_size, verbose=0), dtype=np.float32
+        encoder.predict(selected_X_test, batch_size=settings.batch_size, verbose=0),
+        dtype=np.float32,
     )
     if encoded_X_train.shape != (len(X_train), selected_encoding_dim):
         raise RuntimeError(f"Encoded train shape hatali: {encoded_X_train.shape}")
@@ -277,20 +278,22 @@ def evaluate_selected_features(
     tf.keras.backend.clear_session()
     gc.collect()
     set_reproducible(random_state + 1)
-    metrics, classifier_epochs_completed, classifier_fit_count, classifier_validation_count = train_classifier(
-        X_train=encoded_X_train,
-        X_test=encoded_X_test,
-        y_train=y_train,
-        y_test=y_test,
-        classifier_model=classifier_model,
-        hidden_units=classifier_hidden_units,
-        learning_rate=classifier_learning_rate,
-        epochs=classifier_epochs,
-        batch_size=batch_size,
-        early_stopping_patience=classifier_early_stopping_patience,
-        validation_size=validation_size,
-        random_state=random_state + 1,
-        verbose=verbose,
+    metrics, classifier_epochs_completed, classifier_fit_count, classifier_validation_count = (
+        train_classifier(
+            X_train=encoded_X_train,
+            X_test=encoded_X_test,
+            y_train=y_train,
+            y_test=y_test,
+            classifier_model=settings.classifier_model,
+            hidden_units=settings.classifier_hidden_units,
+            learning_rate=settings.classifier_learning_rate,
+            epochs=settings.classifier_epochs,
+            batch_size=settings.batch_size,
+            early_stopping_patience=settings.classifier_early_stopping_patience,
+            validation_size=settings.validation_size,
+            random_state=random_state + 1,
+            verbose=settings.verbose,
+        )
     )
     counts: dict[str, int | None] = {
         "selected_encoding_dim": selected_encoding_dim,
@@ -312,7 +315,12 @@ def save_metric_text(results: list[FeatureRankFoldResult], output_path: Path) ->
         "Evaluation Scheme: repeated_stratified_kfold",
         "",
     ]
-    for label, field in (("Accuracy", "accuracy"), ("Precision", "precision"), ("Recall", "recall"), ("F1", "f1")):
+    for label, field in (
+        ("Accuracy", "accuracy"),
+        ("Precision", "precision"),
+        ("Recall", "recall"),
+        ("F1", "f1"),
+    ):
         values = [float(getattr(result, field)) for result in results]
         stats = repeated_metric_statistics(values)
         lines.extend(
@@ -349,7 +357,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--random-state", default="42")
     parser.add_argument("--autoencoder-epochs", type=int, default=DEFAULT_AUTOENCODER_EPOCHS)
     parser.add_argument("--classifier-epochs", type=int, default=DEFAULT_CLASSIFIER_EPOCHS)
-    parser.add_argument("--classifier-model", choices=["neural", "logistic", "svm", "random_forest"], default="neural")
+    parser.add_argument(
+        "--classifier-model", choices=["neural", "logistic", "random_forest"], default="neural"
+    )
     parser.add_argument("--classifier-hidden-units", default="32,16")
     parser.add_argument("--classifier-learning-rate", type=float, default=DEFAULT_LEARNING_RATE)
     parser.add_argument(
@@ -367,12 +377,21 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--classifier-early-stopping-patience", type=int, default=0)
     parser.add_argument("--device", choices=["auto", "cpu", "gpu"], default="auto")
     parser.add_argument("--verbose", type=int, choices=[0, 1, 2], default=1)
-    parser.add_argument("--output-dir", type=Path, default=PROJECT_ROOT / "outputs" / "feature_rank_cv")
+    parser.add_argument(
+        "--output-dir", type=Path, default=PROJECT_ROOT / "outputs" / "feature_rank_cv"
+    )
     return parser
 
 
 def validate_arguments(args: argparse.Namespace) -> None:
-    for name in ("encoding_dim", "cv_folds", "cv_repeats", "autoencoder_epochs", "classifier_epochs", "batch_size"):
+    for name in (
+        "encoding_dim",
+        "cv_folds",
+        "cv_repeats",
+        "autoencoder_epochs",
+        "classifier_epochs",
+        "batch_size",
+    ):
         if int(getattr(args, name)) <= 0:
             raise ValueError(f"--{name.replace('_', '-')} pozitif olmali.")
     if args.cv_folds < 2:
@@ -384,12 +403,30 @@ def validate_arguments(args: argparse.Namespace) -> None:
             raise ValueError(f"--{name.replace('_', '-')} negatif olamaz.")
 
 
+def build_training_settings(args: argparse.Namespace) -> TrainingSettings:
+    """Read model-related CLI values once for all folds and percentages."""
+    return TrainingSettings(
+        encoding_dim=args.encoding_dim,
+        autoencoder_epochs=args.autoencoder_epochs,
+        classifier_model=args.classifier_model,
+        classifier_hidden_units=parse_hidden_units(args.classifier_hidden_units),
+        classifier_learning_rate=args.classifier_learning_rate,
+        classifier_epochs=args.classifier_epochs,
+        validation_size=args.validation_size,
+        batch_size=args.batch_size,
+        autoencoder_early_stopping_patience=args.autoencoder_early_stopping_patience,
+        classifier_early_stopping_patience=args.classifier_early_stopping_patience,
+        classifier_input=args.classifier_input,
+        verbose=args.verbose,
+    )
+
+
 def main() -> None:
     args = build_parser().parse_args()
     validate_arguments(args)
     percentages = parse_percentages(args.percentages)
     random_state = parse_random_state(args.random_state)
-    hidden_units = parse_hidden_units(args.classifier_hidden_units)
+    settings = build_training_settings(args)
     configure_tensorflow_device(args.device)
     set_reproducible(random_state)
 
@@ -424,7 +461,9 @@ def main() -> None:
     print(f"[INFO] Dataset: {raw.dataset_name}")
     print(f"[INFO] Percentages: {percentages}")
     print(f"[INFO] CV: {args.cv_folds} fold x {args.cv_repeats} repeat")
-    print("[INFO] Her fold icin FeatureRank agirliklari yalnizca train verisinden yeniden uretilecek.")
+    print(
+        "[INFO] Her fold icin FeatureRank agirliklari yalnizca train verisinden yeniden uretilecek."
+    )
 
     for evaluation_index, (train_indices, test_indices) in enumerate(
         splitter.split(raw.X_raw, raw.y_raw.to_numpy())
@@ -449,18 +488,18 @@ def main() -> None:
             f"train={prepared.X_train.shape}, test={prepared.X_test.shape}"
         )
 
-        ranking_autoencoder, _, ranking_X_fit, ranking_fit_count, ranking_validation_count, ranking_epochs = (
-            train_feature_rank_autoencoder(
-                X_train=prepared.X_train,
-                y_train=prepared.y_train,
-                encoding_dim=args.encoding_dim,
-                epochs=args.autoencoder_epochs,
-                batch_size=args.batch_size,
-                validation_size=args.validation_size,
-                early_stopping_patience=args.autoencoder_early_stopping_patience,
-                random_state=run_seed,
-                verbose=args.verbose,
-            )
+        (
+            ranking_autoencoder,
+            _,
+            ranking_X_fit,
+            ranking_fit_count,
+            ranking_validation_count,
+            ranking_epochs,
+        ) = train_feature_rank_autoencoder(
+            X_train=prepared.X_train,
+            y_train=prepared.y_train,
+            settings=settings,
+            random_state=run_seed,
         )
         ranking = calculate_feature_ranking(
             autoencoder=ranking_autoencoder,
@@ -490,23 +529,12 @@ def main() -> None:
                 y_train=prepared.y_train,
                 y_test=prepared.y_test,
                 selected_indices=selected_indices,
-                encoding_dim=args.encoding_dim,
-                autoencoder_epochs=args.autoencoder_epochs,
-                classifier_model=args.classifier_model,
-                classifier_hidden_units=hidden_units,
-                classifier_learning_rate=args.classifier_learning_rate,
-                classifier_epochs=args.classifier_epochs,
-                validation_size=args.validation_size,
-                batch_size=args.batch_size,
-                autoencoder_early_stopping_patience=args.autoencoder_early_stopping_patience,
-                classifier_early_stopping_patience=args.classifier_early_stopping_patience,
-                classifier_input=args.classifier_input,
+                settings=settings,
                 random_state=run_seed,
-                verbose=args.verbose,
             )
             metrics_path = fold_dir / f"top_{percentage_tag}_metrics.json"
             payload = {
-                "dataset": prepared.dataset_name,
+                "dataset": raw.dataset_name,
                 "method": "FeatureRank",
                 "evaluation_scheme": "repeated_stratified_kfold",
                 "percentage": percentage,
@@ -546,7 +574,7 @@ def main() -> None:
             }
             save_json(payload, metrics_path)
             result = FeatureRankFoldResult(
-                dataset=prepared.dataset_name,
+                dataset=raw.dataset_name,
                 percentage=float(percentage),
                 selected_feature_count=selected_count,
                 original_feature_count=len(ranking),
@@ -560,7 +588,9 @@ def main() -> None:
                 ranking_autoencoder_fit_samples=ranking_fit_count,
                 ranking_autoencoder_validation_samples=ranking_validation_count,
                 selected_autoencoder_fit_samples=int(counts["selected_autoencoder_fit_samples"]),
-                selected_autoencoder_validation_samples=int(counts["selected_autoencoder_validation_samples"]),
+                selected_autoencoder_validation_samples=int(
+                    counts["selected_autoencoder_validation_samples"]
+                ),
                 classifier_fit_samples=int(counts["classifier_fit_samples"]),
                 classifier_validation_samples=int(counts["classifier_validation_samples"]),
                 classifier_test_samples=len(prepared.X_test),
@@ -571,7 +601,9 @@ def main() -> None:
                 metric_average=str(metrics["metric_average"]),
                 classifier_input=args.classifier_input,
                 ranking_autoencoder_epochs_completed=ranking_epochs,
-                selected_autoencoder_epochs_completed=int(counts["selected_autoencoder_epochs_completed"]),
+                selected_autoencoder_epochs_completed=int(
+                    counts["selected_autoencoder_epochs_completed"]
+                ),
                 classifier_epochs_completed=(
                     int(counts["classifier_epochs_completed"])
                     if counts["classifier_epochs_completed"] is not None

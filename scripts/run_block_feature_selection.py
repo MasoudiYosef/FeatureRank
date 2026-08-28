@@ -1,3 +1,5 @@
+"""Compare global and block-based FeatureRank on one train/test split."""
+
 from __future__ import annotations
 
 import argparse
@@ -11,6 +13,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 from sklearn.metrics import f1_score, precision_score, recall_score
+from sklearn.model_selection import train_test_split
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 os.environ.setdefault("MPLCONFIGDIR", str((PROJECT_ROOT / ".matplotlib_cache").resolve()))
@@ -18,17 +21,23 @@ sys.path.append(str(PROJECT_ROOT))
 sys.path.append(str(PROJECT_ROOT / "scripts"))
 
 from src.autoencoder_feature_selection import validate_feature_percent
+from src.config import CLASSIFIER_VALIDATION_SPLIT
 from src.data_loader import load_data
+from src.experiment import (
+    train_and_evaluate_direct_classifier,
+    train_and_evaluate_direct_multiclass_classifier,
+    train_and_evaluate_pipeline,
+    train_autoencoder_model,
+)
+from src.output_paths import format_feature_percent_tag
 from src.preprocessing import preprocess_data, scale_data
+from src.runtime import set_reproducible
 from src.utils import ensure_dir, save_json
-
-import run_autoencoder as ra
 
 
 @dataclass(frozen=True)
-class ExperimentConfig:
+class BlockSelectionConfig:
     dataset_name: str
-    dataset_folder: str
     target_column: str
     id_column: str | None
     block_size: int
@@ -37,15 +46,30 @@ class ExperimentConfig:
     encoding_dim: int
     random_state: int | None
     autoencoder_epochs: int
-    classifier_epochs: int
-    classifier_hidden_units: tuple[int, ...]
-    classifier_dropout_rates: tuple[float, ...] | None
-    classifier_learning_rate: float
-    classifier_model: str
-    classifier_class_weight: str
-    classifier_sampling: str
     final_model_mode: str
     output_dir: Path
+
+
+@dataclass(frozen=True)
+class SelectionInput:
+    """Scaled data and names used for one FeatureRank selection call."""
+
+    X_train: np.ndarray
+    X_test: np.ndarray
+    y_train: np.ndarray
+    feature_names: list[str]
+    selected_count: int
+
+
+@dataclass(frozen=True)
+class EvaluationInput:
+    """Raw train/test data and the selected names to evaluate."""
+
+    X_train_raw: pd.DataFrame
+    X_test_raw: pd.DataFrame
+    y_train: np.ndarray
+    y_test: np.ndarray
+    feature_names: list[str]
 
 
 def parse_random_state(text: str | None) -> int | None:
@@ -57,29 +81,16 @@ def parse_random_state(text: str | None) -> int | None:
     return int(value)
 
 
-def parse_hidden_units(text: str) -> tuple[int, ...]:
-    units = tuple(int(part.strip()) for part in text.split(",") if part.strip())
-    if not units:
-        raise ValueError("--classifier-hidden-units bos olamaz.")
-    return units
-
-
-def parse_dropout_rates(text: str | None, layer_count: int) -> tuple[float, ...] | None:
-    if text is None or str(text).strip() == "":
-        return None
-    rates = tuple(float(part.strip()) for part in str(text).split(",") if part.strip())
-    if len(rates) != layer_count:
-        raise ValueError("--classifier-dropout-rates uzunlugu hidden layer sayisiyla ayni olmali.")
-    return rates
-
-
 def select_count(total_features: int, feature_percent: float | None, top_k: int | None) -> int:
     if top_k is not None:
         return min(max(int(top_k), 1), total_features)
     if feature_percent is None:
         raise ValueError("--feature-percent veya --top-k verilmelidir.")
     validate_feature_percent(float(feature_percent))
-    return min(max(math.ceil(total_features * (float(feature_percent) / 100.0)), 1), total_features)
+    return min(
+        max(math.ceil(total_features * (float(feature_percent) / 100.0)), 1),
+        total_features,
+    )
 
 
 def make_blocks(feature_names: list[str], block_size: int) -> list[tuple[int, int, list[str]]]:
@@ -117,96 +128,76 @@ def feature_scores_from_autoencoder(
     )
 
 
-def run_featurerank_selection(
-    X_train: np.ndarray,
-    X_test: np.ndarray,
-    y_train: np.ndarray,
-    feature_names: list[str],
-    config: ExperimentConfig,
-    selected_count: int,
+def select_features_with_autoencoder(
+    selection: SelectionInput,
+    config: BlockSelectionConfig,
 ) -> pd.DataFrame:
-    ra.set_reproducible(config.random_state)
-    X_train_sub, X_val, _y_train_sub, _ = ra.train_test_split(
+    """Rank one feature set and return its highest-scoring features."""
+    X_train = selection.X_train
+    X_test = selection.X_test
+    y_train = selection.y_train
+    set_reproducible(config.random_state)
+    X_train_sub, X_val, _y_train_sub, _ = train_test_split(
         X_train,
         y_train,
-        test_size=ra.CLASSIFIER_VALIDATION_SPLIT,
+        test_size=CLASSIFIER_VALIDATION_SPLIT,
         random_state=config.random_state,
         shuffle=True,
         stratify=y_train,
     )
-    _mse, autoencoder, _encoder = ra.train_autoencoder_model(
+    _mse, autoencoder, _encoder = train_autoencoder_model(
         X_train_sub=X_train_sub.astype(np.float32),
         X_val=X_val.astype(np.float32),
         X_eval=X_test.astype(np.float32),
         encoding_dim=config.encoding_dim,
         autoencoder_epochs=config.autoencoder_epochs,
-        early_stopping_patience=0,
-        early_stopping_min_delta=0.0,
         shuffle_training=config.random_state is None,
     )
-    ranked = feature_scores_from_autoencoder(autoencoder, X_train_sub, feature_names)
-    return ranked.head(selected_count).copy()
+    ranked = feature_scores_from_autoencoder(autoencoder, X_train_sub, selection.feature_names)
+    return ranked.head(selection.selected_count).copy()
 
 
-def evaluate_classifier(
+def evaluate_model(
     X_train: np.ndarray,
     X_test: np.ndarray,
     y_train: np.ndarray,
     y_test: np.ndarray,
-    config: ExperimentConfig,
+    config: BlockSelectionConfig,
 ) -> dict:
+    """Train the configured model and return its classification metrics."""
     class_labels = np.unique(np.concatenate([y_train, y_test]))
-    ra.set_reproducible(config.random_state)
+    set_reproducible(config.random_state)
 
     if config.final_model_mode == "autoencoder_pipeline":
         if len(class_labels) != 2:
-            raise ValueError("--final-model-mode autoencoder_pipeline su an sadece binary sinif icin destekleniyor.")
-        _mse, accuracy, _ae, _enc, _train_sub, y_pred, _score = ra.train_and_evaluate_pipeline(
+            raise ValueError(
+                "--final-model-mode autoencoder_pipeline su an sadece binary sinif icin destekleniyor."
+            )
+        result = train_and_evaluate_pipeline(
             X_train=X_train.astype(np.float32),
             X_test=X_test.astype(np.float32),
             y_train=y_train.astype(np.int32),
             y_test=y_test.astype(np.int32),
             encoding_dim=config.encoding_dim,
             random_state=config.random_state,
-            classifier_epochs=config.classifier_epochs,
-            classifier_hidden_units=config.classifier_hidden_units,
-            classifier_dropout_rates=config.classifier_dropout_rates,
-            classifier_learning_rate=config.classifier_learning_rate,
-            classifier_model=config.classifier_model,
-            classifier_early_stopping_patience=0,
-            autoencoder_early_stopping_patience=0,
-            classifier_class_weight=config.classifier_class_weight,
-            classifier_sampling=config.classifier_sampling,
         )
+        accuracy = float(result[1])
+        y_pred = result[5]
     elif len(class_labels) == 2:
-        accuracy, y_pred, _score = ra.train_and_evaluate_direct_classifier(
+        accuracy, y_pred, _score = train_and_evaluate_direct_classifier(
             X_train=X_train.astype(np.float32),
             X_test=X_test.astype(np.float32),
             y_train=y_train.astype(np.int32),
             y_test=y_test.astype(np.int32),
             random_state=config.random_state,
-            classifier_epochs=config.classifier_epochs,
-            classifier_hidden_units=config.classifier_hidden_units,
-            classifier_dropout_rates=config.classifier_dropout_rates,
-            classifier_learning_rate=config.classifier_learning_rate,
-            classifier_model=config.classifier_model,
-            classifier_early_stopping_patience=0,
-            classifier_class_weight=config.classifier_class_weight,
-            classifier_sampling=config.classifier_sampling,
         )
     else:
-        accuracy, y_pred, _score = ra.train_and_evaluate_direct_multiclass_classifier(
+        accuracy, y_pred, _score = train_and_evaluate_direct_multiclass_classifier(
             X_train=X_train.astype(np.float32),
             X_test=X_test.astype(np.float32),
             y_train=y_train.astype(np.int32),
             y_test=y_test.astype(np.int32),
             random_state=config.random_state,
-            classifier_epochs=config.classifier_epochs,
-            classifier_hidden_units=config.classifier_hidden_units,
-            classifier_dropout_rates=config.classifier_dropout_rates,
-            classifier_learning_rate=config.classifier_learning_rate,
-            classifier_model=config.classifier_model,
-            classifier_early_stopping_patience=0,
         )
 
     average = "binary" if len(class_labels) == 2 else "weighted"
@@ -218,23 +209,17 @@ def evaluate_classifier(
     }
 
 
-def evaluate_feature_subset(
-    X_train_raw: pd.DataFrame,
-    X_test_raw: pd.DataFrame,
-    y_train: np.ndarray,
-    y_test: np.ndarray,
-    feature_names: list[str],
-    config: ExperimentConfig,
-) -> dict:
-    X_train_subset_raw = X_train_raw[feature_names]
-    X_test_subset_raw = X_test_raw[feature_names]
+def evaluate_selected_features(data: EvaluationInput, config: BlockSelectionConfig) -> dict:
+    """Evaluate only the selected original columns."""
+    X_train_subset_raw = data.X_train_raw[data.feature_names]
+    X_test_subset_raw = data.X_test_raw[data.feature_names]
     X_train_subset, X_test_subset, _ = scale_data(X_train_subset_raw, X_test_subset_raw)
-    return evaluate_classifier(X_train_subset, X_test_subset, y_train, y_test, config)
+    return evaluate_model(X_train_subset, X_test_subset, data.y_train, data.y_test, config)
 
-def run_experiment(config: ExperimentConfig) -> None:
+
+def run_experiment(config: BlockSelectionConfig) -> None:
     start_time = time.perf_counter()
     ensure_dir(config.output_dir)
-
     df = load_data(config.dataset_name, folder="raw", target_column=config.target_column)
     processed = preprocess_data(
         df,
@@ -257,7 +242,7 @@ def run_experiment(config: ExperimentConfig) -> None:
     print(f"[INFO] Train shape: {X_train_raw.shape}, Test shape: {X_test_raw.shape}")
     print(f"[INFO] Global selected feature count: {selected_global_count}")
 
-    all_feature_metrics = evaluate_classifier(
+    all_feature_metrics = evaluate_model(
         X_train_scaled,
         X_test_scaled,
         y_train,
@@ -265,39 +250,43 @@ def run_experiment(config: ExperimentConfig) -> None:
         config,
     )
 
-    global_selected = run_featurerank_selection(
-        X_train=X_train_scaled,
-        X_test=X_test_scaled,
-        y_train=y_train,
-        feature_names=feature_names,
-        config=config,
-        selected_count=selected_global_count,
+    global_selected = select_features_with_autoencoder(
+        SelectionInput(
+            X_train=X_train_scaled,
+            X_test=X_test_scaled,
+            y_train=y_train,
+            feature_names=feature_names,
+            selected_count=selected_global_count,
+        ),
+        config,
     )
     global_selected["rank"] = np.arange(1, len(global_selected) + 1)
     global_selected.to_csv(config.output_dir / "global_selected_features.csv", index=False)
     global_features = global_selected["feature_name"].tolist()
-    global_metrics = evaluate_feature_subset(
-        X_train_raw,
-        X_test_raw,
-        y_train,
-        y_test,
-        global_features,
+    global_metrics = evaluate_selected_features(
+        EvaluationInput(X_train_raw, X_test_raw, y_train, y_test, global_features),
         config,
     )
 
     block_rows: list[dict] = []
     block_selected_rows: list[pd.DataFrame] = []
-    for block_index, (start, end, block_feature_names) in enumerate(make_blocks(feature_names, config.block_size), start=1):
-        block_selected_count = select_count(len(block_feature_names), config.feature_percent, config.top_k)
+    for block_index, (start, end, block_feature_names) in enumerate(
+        make_blocks(feature_names, config.block_size), start=1
+    ):
+        block_selected_count = select_count(
+            len(block_feature_names), config.feature_percent, config.top_k
+        )
         X_train_block = X_train_scaled[:, start:end]
         X_test_block = X_test_scaled[:, start:end]
-        selected = run_featurerank_selection(
-            X_train=X_train_block,
-            X_test=X_test_block,
-            y_train=y_train,
-            feature_names=block_feature_names,
-            config=config,
-            selected_count=block_selected_count,
+        selected = select_features_with_autoencoder(
+            SelectionInput(
+                X_train=X_train_block,
+                X_test=X_test_block,
+                y_train=y_train,
+                feature_names=block_feature_names,
+                selected_count=block_selected_count,
+            ),
+            config,
         )
         selected.insert(0, "block", block_index)
         selected.insert(1, "block_feature_start", start + 1)
@@ -320,12 +309,8 @@ def run_experiment(config: ExperimentConfig) -> None:
     pd.DataFrame(block_rows).to_csv(config.output_dir / "block_feature_counts.csv", index=False)
 
     block_features = list(dict.fromkeys(block_selected["feature_name"].tolist()))
-    block_metrics = evaluate_feature_subset(
-        X_train_raw,
-        X_test_raw,
-        y_train,
-        y_test,
-        block_features,
+    block_metrics = evaluate_selected_features(
+        EvaluationInput(X_train_raw, X_test_raw, y_train, y_test, block_features),
         config,
     )
 
@@ -338,9 +323,21 @@ def run_experiment(config: ExperimentConfig) -> None:
     jaccard = float(len(common) / union_count) if union_count else 0.0
 
     comparison_rows = [
-        {"group": "common_features", "count": len(common), "features": ", ".join(common)},
-        {"group": "only_global", "count": len(only_global), "features": ", ".join(only_global)},
-        {"group": "only_block_based", "count": len(only_block), "features": ", ".join(only_block)},
+        {
+            "group": "common_features",
+            "count": len(common),
+            "features": ", ".join(common),
+        },
+        {
+            "group": "only_global",
+            "count": len(only_global),
+            "features": ", ".join(only_global),
+        },
+        {
+            "group": "only_block_based",
+            "count": len(only_block),
+            "features": ", ".join(only_block),
+        },
         {"group": "jaccard_similarity", "count": jaccard, "features": ""},
     ]
     pd.DataFrame(comparison_rows).to_csv(config.output_dir / "feature_comparison.csv", index=False)
@@ -409,30 +406,45 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--encoding-dim", type=int, default=8)
     parser.add_argument("--random-state", default="42")
     parser.add_argument("--autoencoder-epochs", type=int, default=50)
-    parser.add_argument("--classifier-model", choices=["neural", "logistic", "svm", "random_forest"], default="neural")
-    parser.add_argument("--classifier-epochs", type=int, default=50)
-    parser.add_argument("--classifier-hidden-units", default="32,16")
-    parser.add_argument("--classifier-dropout-rates", default=None)
-    parser.add_argument("--classifier-learning-rate", type=float, default=0.001)
-    parser.add_argument("--classifier-class-weight", choices=["none", "balanced"], default="none")
-    parser.add_argument("--classifier-sampling", choices=["none", "undersample"], default="none")
-    parser.add_argument("--final-model-mode", choices=["direct", "autoencoder_pipeline"], default="direct")
+    # These flags existed in the old CLI but were never used by this workflow.
+    # Keep accepting them so old commands fail neither abruptly nor silently
+    # because of an unknown option; hide them from the normal help output.
+    parser.add_argument("--classifier-model", help=argparse.SUPPRESS)
+    parser.add_argument("--classifier-epochs", type=int, help=argparse.SUPPRESS)
+    parser.add_argument("--classifier-hidden-units", help=argparse.SUPPRESS)
+    parser.add_argument("--classifier-dropout-rates", help=argparse.SUPPRESS)
+    parser.add_argument("--classifier-learning-rate", type=float, help=argparse.SUPPRESS)
+    parser.add_argument("--classifier-class-weight", help=argparse.SUPPRESS)
+    parser.add_argument("--classifier-sampling", help=argparse.SUPPRESS)
+    parser.add_argument(
+        "--final-model-mode",
+        choices=["direct", "autoencoder_pipeline"],
+        default="direct",
+    )
     parser.add_argument("--output-root", default="outputs/block_feature_selection")
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    hidden_units = parse_hidden_units(args.classifier_hidden_units)
-    dropout_rates = parse_dropout_rates(args.classifier_dropout_rates, len(hidden_units))
     dataset_folder = Path(args.dataset_name).stem
-    id_column = None if str(args.id_column).strip().lower() in {"none", "null", ""} else args.id_column
-    selection_label = f"top_k_{args.top_k}" if args.top_k is not None else f"top_{ra.format_feature_percent_tag(args.feature_percent)}"
-    output_dir = PROJECT_ROOT / args.output_root / dataset_folder / f"{selection_label}_block_{args.block_size}"
+    id_column = (
+        None if str(args.id_column).strip().lower() in {"none", "null", ""} else args.id_column
+    )
+    selection_label = (
+        f"top_k_{args.top_k}"
+        if args.top_k is not None
+        else f"top_{format_feature_percent_tag(args.feature_percent)}"
+    )
+    output_dir = (
+        PROJECT_ROOT
+        / args.output_root
+        / dataset_folder
+        / f"{selection_label}_block_{args.block_size}"
+    )
 
-    config = ExperimentConfig(
+    config = BlockSelectionConfig(
         dataset_name=args.dataset_name,
-        dataset_folder=dataset_folder,
         target_column=args.target_column,
         id_column=id_column,
         block_size=args.block_size,
@@ -441,13 +453,6 @@ def main() -> None:
         encoding_dim=args.encoding_dim,
         random_state=parse_random_state(args.random_state),
         autoencoder_epochs=args.autoencoder_epochs,
-        classifier_epochs=args.classifier_epochs,
-        classifier_hidden_units=hidden_units,
-        classifier_dropout_rates=dropout_rates,
-        classifier_learning_rate=args.classifier_learning_rate,
-        classifier_model=args.classifier_model,
-        classifier_class_weight=args.classifier_class_weight,
-        classifier_sampling=args.classifier_sampling,
         final_model_mode=args.final_model_mode,
         output_dir=output_dir,
     )

@@ -1,24 +1,51 @@
-""""" Info: Preprocessing dosyası, veri setini ön işlemek için kullanılır.
+"""Prepare tabular data for the classification, regression, and clustering workflows.
 
-Adımlar:
-1.Veriyi temizlemek
-2.ID sütununu çıkarmak
-3.diagnosis sütununu sayısallaştırmak
-4.X ve y ayırmak
-5.Train/test split yapmak
-6.Scaling uygulamak
-7.CNN için reshape etmek
-8.İşlenmiş veriyi kaydetmek
-
+The module keeps the established ID handling, target encoding, train/test split,
+and feature scaling behavior in one place.
 """
 
-
-import pandas as pd
 import numpy as np
+import pandas as pd
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
-from sklearn.preprocessing import MinMaxScaler
-from src.config import TARGET_COLUMN, ID_COLUMN, TEST_SIZE, RANDOM_STATE
+from src.config import ID_COLUMN, RANDOM_STATE, TARGET_COLUMN, TEST_SIZE
+
+
+def _prepare_target(
+    df: pd.DataFrame,
+    target_column: str,
+    task_type: str,
+) -> tuple[pd.DataFrame, bool]:
+    """Encode the target and return whether the split should be stratified."""
+    task_name = task_type.lower().strip()
+    if task_name == "regression":
+        return encode_regression_target(df, target_column), False
+    if task_name == "classification":
+        return encode_target(df, target_column), True
+    raise ValueError("task_type 'classification' veya 'regression' olmali.")
+
+
+def _validate_scaled_data(X_train: np.ndarray, X_test: np.ndarray) -> None:
+    """Fail early when scaling produced an invalid numeric matrix."""
+    for name, values in (("X_train_scaled", X_train), ("X_test_scaled", X_test)):
+        if np.isnan(values).any() or np.isinf(values).any():
+            raise ValueError(f"{name} contains NaN/Inf. Shape: {values.shape}")
+
+
+def is_probable_regression_target(y: pd.Series) -> bool:
+    """Return True when a numeric target looks continuous rather than categorical."""
+    values = y.dropna()
+    if values.empty or not pd.api.types.is_numeric_dtype(values):
+        return False
+    unique_count = int(values.nunique())
+    if unique_count <= 20:
+        return False
+
+    numeric = values.astype(float).to_numpy()
+    has_decimals = np.any(~np.isclose(numeric, np.round(numeric)))
+    unique_ratio = unique_count / len(values)
+    singleton_ratio = float((values.value_counts() == 1).mean())
+    return bool(has_decimals and (unique_ratio > 0.1 or singleton_ratio > 0.5))
 
 
 def drop_id_column(df: pd.DataFrame, id_column: str | None = ID_COLUMN) -> pd.DataFrame:
@@ -29,7 +56,8 @@ def drop_id_column(df: pd.DataFrame, id_column: str | None = ID_COLUMN) -> pd.Da
         df = df.drop(columns=[id_column])
     return df
 
-#df["diagnosis"] = df["diagnosis"].map({"M": 1, "B": 0})
+
+# df["diagnosis"] = df["diagnosis"].map({"M": 1, "B": 0})
 def encode_target(df: pd.DataFrame, target_column: str = TARGET_COLUMN) -> pd.DataFrame:
     """
     diagnosis sütununu sayısal hale getirir.
@@ -91,7 +119,9 @@ def encode_regression_target(df: pd.DataFrame, target_column: str = TARGET_COLUM
     return df
 
 
-def split_features_target(df: pd.DataFrame, target_column: str = TARGET_COLUMN):
+def split_features_target(
+    df: pd.DataFrame, target_column: str = TARGET_COLUMN
+) -> tuple[pd.DataFrame, pd.Series]:
     """
     Girdi özelliklerini (X) ve hedef değişkeni (y) ayırır.
     """
@@ -115,7 +145,13 @@ def handle_pid_unrealistic_zeros(X: pd.DataFrame) -> pd.DataFrame:
     if list(X_fixed.columns) != pid_like_columns:
         return X_fixed
 
-    zero_as_missing_cols = ["feature_2", "feature_3", "feature_4", "feature_5", "feature_6"]
+    zero_as_missing_cols = [
+        "feature_2",
+        "feature_3",
+        "feature_4",
+        "feature_5",
+        "feature_6",
+    ]
     X_fixed[zero_as_missing_cols] = X_fixed[zero_as_missing_cols].replace(0, np.nan)
     return X_fixed
 
@@ -143,7 +179,16 @@ def sanitize_mixed_type_features(X: pd.DataFrame) -> pd.DataFrame:
             continue
 
         s = series.astype(str).str.strip()
-        s = s.replace({"": np.nan, "nan": np.nan, "None": np.nan, "NA": np.nan, "N/A": np.nan, "?": np.nan})
+        s = s.replace(
+            {
+                "": np.nan,
+                "nan": np.nan,
+                "None": np.nan,
+                "NA": np.nan,
+                "N/A": np.nan,
+                "?": np.nan,
+            }
+        )
         s = s.str.replace(",", ".", regex=False)
         X_clean[col] = pd.to_numeric(s, errors="coerce")
 
@@ -190,22 +235,22 @@ def split_data(
         y,
         test_size=TEST_SIZE,
         random_state=random_state,
-        stratify=y if stratify else None # Classification'da sınıf dağılımını korur; regression'da kapalıdır.
+        stratify=(
+            y if stratify else None
+        ),  # Classification'da sınıf dağılımını korur; regression'da kapalıdır.
     )
     return X_train, X_test, y_train, y_test
 
 
-def scale_data(X_train: pd.DataFrame, X_test: pd.DataFrame):
+def scale_data(
+    X_train: pd.DataFrame, X_test: pd.DataFrame
+) -> tuple[np.ndarray, np.ndarray, StandardScaler]:
     """
     StandardScaler ile veriyi ölçekler.
-    Sadece X_train üzerinde fit yapılır. 0.24 leri 0-1 arasına getirir.
+    Sadece X_train üzerinde fit edilir; X_test aynı scaler ile dönüştürülür.
     Çıkış dtype: float32 (TensorFlow uyumluluğu için)
     """
-    #Standart SCALER
     scaler = StandardScaler()
-
-    #MİN-MAX SCALER
-    #scaler = MinMaxScaler()
 
     X_train_scaled = scaler.fit_transform(X_train).astype(np.float32)
     X_test_scaled = scaler.transform(X_test).astype(np.float32)
@@ -226,20 +271,14 @@ def preprocess_data(
     Çıkış: float32 arrays (TensorFlow uyumluluğu)
     """
     df = drop_id_column(df, id_column=id_column)
-    task_type = task_type.lower().strip()
-    if task_type == "regression":
-        df = encode_regression_target(df, target_column=target_column)
-        use_stratify = False
-    elif task_type == "classification":
-        df = encode_target(df, target_column=target_column)
-        use_stratify = True
-    else:
-        raise ValueError("task_type 'classification' veya 'regression' olmali.")
+    df, use_stratify = _prepare_target(df, target_column, task_type)
 
     X, y = split_features_target(df, target_column=target_column)
     X = handle_pid_unrealistic_zeros(X)
     X = keep_numeric_features_only(X)
-    X_train, X_test, y_train, y_test = split_data(X, y, random_state=random_state, stratify=use_stratify)
+    X_train, X_test, y_train, y_test = split_data(
+        X, y, random_state=random_state, stratify=use_stratify
+    )
     if not scale_features:
         return {
             "X_train": X_train,
@@ -252,12 +291,8 @@ def preprocess_data(
         }
 
     X_train_scaled, X_test_scaled, scaler = scale_data(X_train, X_test)
-    
-    # Final validation
-    if np.isnan(X_train_scaled).any() or np.isinf(X_train_scaled).any():
-        raise ValueError(f"X_train_scaled contains NaN/Inf. Shape: {X_train_scaled.shape}")
-    if np.isnan(X_test_scaled).any() or np.isinf(X_test_scaled).any():
-        raise ValueError(f"X_test_scaled contains NaN/Inf. Shape: {X_test_scaled.shape}")
+
+    _validate_scaled_data(X_train_scaled, X_test_scaled)
 
     return {
         "X_train": X_train,

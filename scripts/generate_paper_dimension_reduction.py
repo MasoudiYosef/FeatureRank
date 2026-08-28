@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -10,17 +11,20 @@ from paper_dimension_reduction_common import (
     DEFAULT_DECODING_DIM,
     DEFAULT_FACTORIZATION_RANK,
     DEFAULT_MAX_DENSE_WEIGHTS,
+    DocumentAutoencoderSettings,
     PROJECT_ROOT,
     compute_encoding_dim,
     estimate_dense_memory_gb,
     fit_document_aligned_autoencoder,
-    normalize_id_column,
     parse_retained_percentages,
-    ra,
     save_headerless_labels,
     save_headerless_matrix,
     save_json,
 )
+from src.data_loader import convert_txt_dataset_to_csv, load_data
+from src.output_paths import normalize_id_column
+from src.preprocessing import preprocess_data, scale_data
+from src.runtime import configure_tensorflow_device
 
 
 def parse_args():
@@ -69,6 +73,24 @@ def parse_args():
     return parser.parse_args()
 
 
+def build_model_settings(args) -> DocumentAutoencoderSettings:
+    """Collect the model options once and reuse them for every run."""
+    return DocumentAutoencoderSettings(
+        encoding_dim=1,
+        decoding_dim=args.decoding_dim,
+        encoding_activation=args.encoding_activation,
+        decoding_activation=args.decoding_activation,
+        learning_rate=args.learning_rate,
+        encoding_implementation=args.encoding_implementation,
+        factorization_rank=args.factorization_rank,
+        max_dense_weights=args.max_dense_weights,
+        epochs=args.autoencoder_epochs,
+        batch_size=args.batch_size,
+        validation_split=args.validation_split,
+        verbose=0 if args.quiet else 1,
+    )
+
+
 def main():
     args = parse_args()
 
@@ -77,21 +99,21 @@ def main():
     if not 0.0 < args.validation_split < 1.0:
         raise ValueError("--validation-split 0 ile 1 arasinda olmali.")
 
-    ra.configure_tensorflow_device(args.device)
+    configure_tensorflow_device(args.device)
 
-    dataset_filename = ra.convert_txt_dataset_to_csv(args.dataset_name)
+    dataset_filename = convert_txt_dataset_to_csv(args.dataset_name)
     dataset_folder = Path(dataset_filename).stem
     id_column = normalize_id_column(args.id_column)
 
     print(f"[INFO] Dataset yukleniyor: {dataset_filename}")
-    df = ra.load_data(
+    df = load_data(
         dataset_filename,
         folder="raw",
         target_column=args.target_column,
     )
 
     # Sadece >1000 input feature datasetler.
-    prepared_for_count = ra.preprocess_data(
+    prepared_for_count = preprocess_data(
         df,
         target_column=args.target_column,
         id_column=id_column,
@@ -106,8 +128,7 @@ def main():
     # The dimensionality-reduction logic remains identical.
     if original_feature_count <= 0:
         raise ValueError(
-            f"Dataset en az 1 feature icermeli. "
-            f"Bu dataset: {original_feature_count} feature."
+            f"Dataset en az 1 feature icermeli. " f"Bu dataset: {original_feature_count} feature."
         )
 
     if original_feature_count <= 1000:
@@ -118,6 +139,7 @@ def main():
         )
 
     retained_values = parse_retained_percentages(args.retained_percent)
+    model_settings = build_model_settings(args)
 
     data_root = PROJECT_ROOT / "data" / "paper_dimension_reduction" / dataset_folder
     output_root = PROJECT_ROOT / "outputs" / "paper_dimension_reduction" / dataset_folder
@@ -137,7 +159,7 @@ def main():
         seed = args.base_seed + run_idx - 1
 
         # Her independent run kendi outer split'ini kullanir.
-        processed = ra.preprocess_data(
+        processed = preprocess_data(
             df,
             target_column=args.target_column,
             id_column=id_column,
@@ -150,7 +172,7 @@ def main():
         y_train = processed["y_train"].to_numpy().astype(np.int32)
         y_test = processed["y_test"].to_numpy().astype(np.int32)
 
-        X_train_scaled, X_test_scaled, _ = ra.scale_data(
+        X_train_scaled, X_test_scaled, _ = scale_data(
             X_train_raw,
             X_test_raw,
         )
@@ -207,19 +229,8 @@ def main():
                 X_train_scaled=X_train_scaled,
                 X_test_scaled=X_test_scaled,
                 y_train=y_train,
-                encoding_dim=encoding_dim,
+                settings=replace(model_settings, encoding_dim=encoding_dim),
                 seed=seed,
-                epochs=args.autoencoder_epochs,
-                batch_size=args.batch_size,
-                validation_split=args.validation_split,
-                decoding_dim=args.decoding_dim,
-                encoding_activation=args.encoding_activation,
-                decoding_activation=args.decoding_activation,
-                learning_rate=args.learning_rate,
-                encoding_implementation=args.encoding_implementation,
-                factorization_rank=args.factorization_rank,
-                max_dense_weights=args.max_dense_weights,
-                verbose=0 if args.quiet else 1,
             )
 
             train_data_path = run_data_dir / "train_data.csv"
@@ -302,10 +313,7 @@ def main():
                     "Reduced representation yine tek encoding_layer output'udur."
                 )
 
-            print(
-                f"[OK] Encoded train/test saved. "
-                f"RMSE={result['reconstruction_rmse']:.6f}"
-            )
+            print(f"[OK] Encoded train/test saved. " f"RMSE={result['reconstruction_rmse']:.6f}")
 
     manifest_path = output_root / "generation_manifest.csv"
     pd.DataFrame(manifest_rows).to_csv(
