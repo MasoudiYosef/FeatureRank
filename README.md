@@ -13,7 +13,7 @@ The project supports two selection modes:
 The selected features can be evaluated with classification, regression, or
 unsupervised clustering.
 
-## Installation PyPI
+## Installation (PyPI)
 
 FeatureRank requires Python 3.13. Python 3.14 is not supported by the current
 TensorFlow release. Check the Python version first:
