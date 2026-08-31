@@ -15,8 +15,7 @@ unsupervised clustering.
 
 ## Installation (PyPI)
 
-FeatureRank requires Python 3.13. Python 3.14 is not supported by the current
-TensorFlow release. Check the Python version first:
+FeatureRank requires Python 3.X. Check the Python version first:
 
 ```bash
 python3 --version
