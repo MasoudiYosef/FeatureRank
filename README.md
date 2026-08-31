@@ -13,7 +13,7 @@ The project supports two selection modes:
 The selected features can be evaluated with classification, regression, or
 unsupervised clustering.
 
-## Installation
+## Installation PyPI
 
 FeatureRank requires Python 3.13. Python 3.14 is not supported by the current
 TensorFlow release. Check the Python version first:
@@ -108,16 +108,13 @@ If you do not want to install the package, use the equivalent script directly:
 python scripts/FeatureRank.py --help
 ```
 
-## Using FeatureRank
+## Local Development
 
 The main entry point is:
 
 ```text
 scripts/FeatureRank.py
 ```
-
-It uses the same task modules for both GLOBAL and DC experiments. The older
-`RunAutoencoder.py` command is kept as a compatibility wrapper.
 
 After the local installation, the workflow can also be called from Python. The
 two required arguments are the dataset name and the percentage to select:
@@ -189,14 +186,6 @@ python scripts/FeatureRank.py \
   --task classification \
   --feature-percent 20 \
   --random-state 42
-```
-
-The command can also be run through the compatibility wrapper:
-
-```bash
-python scripts/RunAutoencoder.py \
-  --dataset-name breast_cancer_data.csv \
-  --feature-percent 20
 ```
 
 ## GLOBAL Mode
