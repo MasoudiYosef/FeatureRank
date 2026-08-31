@@ -28,7 +28,8 @@ Install the published package with:
 pip install FeatureRank
 ```
 
-![Installing FeatureRank with pip](docs/images/01-pip-install.png)
+<img width="1120" height="706" alt="1" src="https://github.com/user-attachments/assets/a80c2e34-da01-484b-a970-241c31a0b0ec" />
+
 
 Open Python:
 
@@ -36,7 +37,9 @@ Open Python:
 python3
 ```
 
-![Opening Python 3](docs/images/02-python3.png)
+<img width="1110" height="119" alt="2" src="https://github.com/user-attachments/assets/7ff33da0-28bf-4a35-89ed-0f824ef22309" />
+
+
 
 Then import FeatureRank at the Python prompt:
 
@@ -44,7 +47,8 @@ Then import FeatureRank at the Python prompt:
 >>> import FeatureRank
 ```
 
-![Importing FeatureRank](docs/images/03-import-featurerank.png)
+<img width="1094" height="71" alt="3" src="https://github.com/user-attachments/assets/a821ccc1-e6c1-4556-a558-c6235c6f4370" />
+
 
 The import opens the desktop GUI automatically. Do not type `import
 FeatureRank` directly in zsh; it is Python code and must be entered after
@@ -143,12 +147,17 @@ or choose a CSV/TXT file with **Browse…**, select a feature percentage, choose
 
 When the GUI opens, the experiment form is ready for these choices:
 
-![FeatureRank GUI](docs/images/04-gui-ready.png)
+<img width="791" height="764" alt="4" src="https://github.com/user-attachments/assets/75ce8735-4e16-47e8-a617-ba1ed272b974" />
+
+
 
 If the required dataset is not listed, press **Browse…** and select its data
 file. For paired datasets, keep the matching label file in the same directory:
 
-![Selecting a dataset](docs/images/05-browse-dataset.png)
+<img width="1374" height="739" alt="5" src="https://github.com/user-attachments/assets/2e62d8ce-c769-4b81-85b8-63a67a5efda8" />
+
+
+
 
 While the model runs, the progress bar and log show stages such as loading,
 feature ranking, block processing, combining, training, and result creation.
@@ -156,7 +165,9 @@ When the run finishes, the summary lists the selected feature count, metric,
 execution time, and output directory. **Open Results Folder** opens that
 directory in Finder, Explorer, or the Linux file manager.
 
-![Completed FeatureRank result](docs/images/06-results.png)
+<img width="722" height="198" alt="6" src="https://github.com/user-attachments/assets/d8831206-81f4-48e0-ac18-501b7de4ba84" />
+
+
 
 The selected file can be a normal CSV containing a `target` column, or one of
 the project's paired files (`*_data.csv` and `*_label.csv`).
@@ -251,39 +262,7 @@ combining reuse
 [`scripts/FeatureBlockDatasetTools.py`](scripts/FeatureBlockDatasetTools.py);
 the ranking algorithm is not duplicated for DC.
 
-## Feature Selection Method
 
-For feature `i`, sample `s`, and encoder unit `j`, the contribution score is:
-
-```text
-score(i) = max_j mean_s(abs(X[s, i] * W[i, j]))
-```
-
-`X` is the scaled input matrix and `W` is the first encoder-layer weight
-matrix. Features are sorted by this score. For `p` percent, the selected count
-is `ceil(number_of_features * p / 100)`, with at least one feature selected.
-
-The implementation is in
-[`src/AutoencoderFeatureSelection.py`](src/AutoencoderFeatureSelection.py).
-
-## Input
-
-The normal input format is a pair of headerless files in `data/raw/`:
-
-```text
-data/raw/arcene_data.csv
-data/raw/arcene_label.csv
-```
-
-Rows represent samples. Columns in the data file represent features. The label
-file contains one target value per row. The loader also supports the legacy text
-and sparse formats present in the repository.
-
-If the target column has a name other than `target`, use
-`--target-column <name>`. If there is no ID column, use `--id-column none`.
-
-Classification targets may be binary or multiclass. Regression targets must be
-numeric and continuous. Clustering does not use labels to fit KMeans.
 
 ## Tasks
 
