@@ -55,24 +55,6 @@ The import opens the desktop GUI automatically. Do not type `import
 FeatureRank` directly in zsh; it is Python code and must be entered after
 starting `python3`.
 
-For local development, run these commands from the repository root instead:
-
-```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-pip install -e .
-```
-
-GPU-specific dependencies are listed in
-[`requirements-gpu.txt`](requirements-gpu.txt). Hardware notes are available in
-[`GPU_SETUP.md`](GPU_SETUP.md).
-
-The repository metadata is version `0.1.3`. Because PyPI releases cannot be
-replaced in place, publish this version (or a newer one) to the existing
-`FeatureRank` project when you release the refactor. If an environment still
-shows an older FeatureRank version, upgrade it with the command above or use the local
-editable installation while developing.
 
 After installation, the package GUI can be opened with:
 
@@ -83,59 +65,6 @@ FeatureRank
 `import FeatureRank` is Python code, not a shell command. On a desktop, the
 following import opens the GUI automatically:
 
-```python
-import FeatureRank
-```
-
-For applications that want to decide when the window opens, use:
-
-```python
-from FeatureRank import Launch
-
-Launch()
-```
-
-On servers or CI without a display, set `FEATURERANK_NO_GUI=1` before
-importing the package.
-
-On macOS, some Anaconda installations crash in their native `pythonw`/Tk
-bridge. If the import returns without a window, use the Python.org 3.13
-interpreter (or update Anaconda's Tk package), then install FeatureRank again
-in that interpreter's environment.
-
-If you do not want to install the package, use the equivalent script directly:
-
-```bash
-python scripts/FeatureRank.py --help
-```
-
-## Local Development
-
-The main entry point is:
-
-```text
-scripts/FeatureRank.py
-```
-
-After the local installation, the workflow can also be called from Python. The
-two required arguments are the dataset name and the percentage to select:
-
-```python
-import FeatureRank
-
-FeatureRank.run(
-    dataset_name="breast_cancer_data.csv",
-    feature_percent=20,
-    task="classification",
-)
-```
-
-The same function accepts `mode="dc"` and `block_count=10` for a Divide &
-Combine run.
-
-`dataset_name` may be a file name in `data/raw` or a full path to a CSV/TXT
-file. A GUI that runs outside the repository should pass the full path to the
-user-selected file.
 
 ## GUI Workflow
 
@@ -170,122 +99,11 @@ directory in Finder, Explorer, or the Linux file manager.
 The selected file can be a normal CSV containing a `target` column, or one of
 the project's paired files (`*_data.csv` and `*_label.csv`).
 
-## Using from Terminal
-
-The original parameterized CLI remains available for development and backward
-compatibility. To inspect its options:
-
-```bash
-python scripts/FeatureRank.py --help
-```
-
-A normal classification run is:
-
-```bash
-python scripts/FeatureRank.py \
-  --dataset-name breast_cancer_data.csv \
-  --task classification \
-  --feature-percent 20 \
-  --random-state 42
-```
-
-## GLOBAL Mode
-
-GLOBAL is the default when neither `--global` nor `--dc` is supplied. Its
-workflow is:
-
-1. load the dataset and labels,
-2. remove the optional ID column and clean the features,
-3. encode the target when classification is requested,
-4. create the reproducible train/test split and scale the features,
-5. train the autoencoder,
-6. calculate the FeatureRank score for every feature,
-7. select the requested percentage, and
-8. evaluate the selected feature set for the requested task.
-
-Run GLOBAL explicitly with:
-
-```bash
-python scripts/FeatureRank.py \
-  --dataset-name carcinom_data.csv \
-  --task classification \
-  --feature-percent 40 \
-  --global
-```
 
 The explicit command above and the same command without `--global` produce the
 same mode.
 
-## Divide & Combine (DC) Mode
 
-DC is useful for datasets with a very large number of feature columns. Rows and
-labels are preserved while only the feature columns are divided.
-
-The steps are:
-
-1. split the feature columns into `N` blocks,
-2. run FeatureRank independently on every block,
-3. select the requested percentage from each block,
-4. translate local feature names to original names with the mapping file,
-5. combine the selected original features,
-6. remove duplicate selections,
-7. create the combined dataset, and
-8. run the final task evaluation on that dataset.
-
-Run DC with ten blocks:
-
-```bash
-python scripts/FeatureRank.py \
-  --dataset-name arcene_data.csv \
-  --task classification \
-  --feature-percent 50 \
-  --dc \
-  --block-count 10
-```
-
-`--global` and `--dc` cannot be used together. If `--block-count` is omitted,
-the current default is 10.
-
-The orchestration is implemented in
-[`src/DivideCombine.py`](src/DivideCombine.py). Splitting, mapping, and
-combining reuse
-[`scripts/FeatureBlockDatasetTools.py`](scripts/FeatureBlockDatasetTools.py);
-the ranking algorithm is not duplicated for DC.
-
-
-
-## Tasks
-
-Classification uses a binary classifier for two labels. For multiclass data, the
-existing one-vs-rest workflow runs one binary experiment per class and reports
-the aggregate metrics.
-
-Regression reports MSE, RMSE, MAE, R², and Pearson correlation where defined.
-
-Clustering evaluates KMeans over the configured `k` range using silhouette
-score. A fixed value can be requested with `--cluster-k`.
-
-Examples:
-
-```bash
-# Classification
-python scripts/FeatureRank.py \
-  --dataset-name breast_cancer_data.csv \
-  --task classification \
-  --feature-percent 20
-
-# Regression
-python scripts/FeatureRank.py \
-  --dataset-name air_data.csv \
-  --task regression \
-  --feature-percent 30
-
-# Clustering
-python scripts/FeatureRank.py \
-  --dataset-name codon_usage_data.csv \
-  --task clustering \
-  --feature-percent 60
-```
 
 ## Parameters
 
@@ -304,15 +122,6 @@ The main user-facing parameters are:
 | `--id-column` | ID column name, or `none` |
 | `--cluster-k` | Fixed cluster count for clustering |
 
-For the complete, current list:
-
-```bash
-python scripts/FeatureRank.py --help
-```
-
-Model architecture, epochs, batch size, learning rate, early stopping, and
-other defaults are kept in
-[`src/Config.py`](src/Config.py), not repeated in every command.
 
 ## Outputs
 
