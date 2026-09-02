@@ -123,43 +123,18 @@ The main user-facing parameters are:
 | `--cluster-k` | Fixed cluster count for clustering |
 
 
-## Outputs
+### Result Inspection and Output Access
 
-GLOBAL classification output for `arcene_data.csv` and 50% selection is written
-under:
+After an experiment is completed successfully, FeatureRank automatically reports the main execution details in the GUI, including the selected feature count, evaluation metric(s), execution time, and output directory.
 
-```text
-outputs/Classification/arcene_data/
-├── first_layer_W_list.csv
-├── top_50_max_abs_features.csv
-├── ORG_*.csv / ORG_*.png
-└── metrics/
-    ├── ORG_test_metrics.json
-    └── top_50_test_metrics.json
-```
+The **Log / Output** panel provides a textual summary of the completed experiment and indicates the location of the generated result files. These files include the selected feature subsets, evaluation metrics, and task-specific visualizations.
 
-The selected feature CSV contains the original feature names and their scores.
-Metric JSON/CSV files contain task results. Generated plots include prediction,
-confusion-matrix, ROC, precision-recall, or clustering figures as applicable.
+For convenient inspection, the **Open Results Folder** button opens the corresponding experiment directory directly in the operating system's file manager. This allows users to examine the generated metric files, selected-feature lists, prediction outputs, and evaluation figures without manually navigating to the output directory.
 
-DC additionally creates:
+All experiment outputs are stored systematically under the `outputs/` directory according to the selected task and dataset. This organization facilitates result verification, comparison between feature-selection configurations, and reproducibility of the conducted experiments.
 
-```text
-split_datasets/arcene/
-├── arcene_block_*.csv
-├── feature_block_mapping.csv
-└── split_summary.csv
+<img width="1111" height="634" alt="7" src="https://github.com/user-attachments/assets/25be6055-ca79-4368-ba65-769fcc8205b9" />
 
-data/raw/
-├── arcene_block_*_data.csv
-├── arcene_block_*_label.csv
-├── arcene_selected_features_combined_data.csv
-└── arcene_selected_features_combined_label.csv
-```
-
-The mapping file links every local block feature to its original feature. The
-combined dataset is used by the final evaluation and is also saved under
-`split_datasets/`.
 
 ## Project Structure
 
