@@ -27,7 +27,8 @@ Install the published package with:
 pip install FeatureRank
 ```
 
-<img width="1120" height="706" alt="1" src="https://github.com/user-attachments/assets/a80c2e34-da01-484b-a970-241c31a0b0ec" />
+<img width="996" height="622" alt="1" src="https://github.com/user-attachments/assets/9a740a4f-7bc1-4b00-a06f-ed4709ecad54" />
+
 
 
 Open Python:
@@ -36,7 +37,8 @@ Open Python:
 python3
 ```
 
-<img width="1110" height="119" alt="2" src="https://github.com/user-attachments/assets/7ff33da0-28bf-4a35-89ed-0f824ef22309" />
+
+<img width="988" height="123" alt="2" src="https://github.com/user-attachments/assets/acda6a62-c687-46a2-925d-74cad86f93b2" />
 
 
 
@@ -46,7 +48,7 @@ Then import FeatureRank at the Python prompt:
 >>> import FeatureRank
 ```
 
-<img width="1094" height="71" alt="3" src="https://github.com/user-attachments/assets/a821ccc1-e6c1-4556-a558-c6235c6f4370" />
+<img width="1104" height="668" alt="3" src="https://github.com/user-attachments/assets/db1dc4db-6080-45ac-9d08-d945948dcc2c" />
 
 
 The import opens the desktop GUI automatically. Do not type `import
@@ -143,15 +145,14 @@ or choose a CSV/TXT file with **Browse…**, select a feature percentage, choose
 
 When the GUI opens, the experiment form is ready for these choices:
 
-<img width="791" height="764" alt="4" src="https://github.com/user-attachments/assets/75ce8735-4e16-47e8-a617-ba1ed272b974" />
-
+<img width="763" height="715" alt="4" src="https://github.com/user-attachments/assets/e136bd77-fc05-4533-94df-65e5c5fd1f51" />
 
 
 If the required dataset is not listed, press **Browse…** and select its data
 file. For paired datasets, keep the matching label file in the same directory:
 
-<img width="1374" height="739" alt="5" src="https://github.com/user-attachments/assets/2e62d8ce-c769-4b81-85b8-63a67a5efda8" />
 
+<img width="1492" height="724" alt="5" src="https://github.com/user-attachments/assets/5b5f4d67-f47c-423a-9efd-4da3f537219b" />
 
 
 
@@ -161,7 +162,8 @@ When the run finishes, the summary lists the selected feature count, metric,
 execution time, and output directory. **Open Results Folder** opens that
 directory in Finder, Explorer, or the Linux file manager.
 
-<img width="722" height="198" alt="6" src="https://github.com/user-attachments/assets/d8831206-81f4-48e0-ac18-501b7de4ba84" />
+
+<img width="852" height="428" alt="6" src="https://github.com/user-attachments/assets/d2908867-882b-4efc-9ff2-49a59cbe27dc" />
 
 
 
