@@ -27,8 +27,7 @@ Install the published package with:
 pip install FeatureRank
 ```
 
-<img width="996" height="622" alt="1" src="https://github.com/user-attachments/assets/9a740a4f-7bc1-4b00-a06f-ed4709ecad54" />
-
+<img width="1134" height="132" alt="1" src="https://github.com/user-attachments/assets/d8720e4d-437a-4da0-b2ab-48d9dba6cdf8" />
 
 
 Open Python:
@@ -38,8 +37,7 @@ python3
 ```
 
 
-<img width="988" height="123" alt="2" src="https://github.com/user-attachments/assets/acda6a62-c687-46a2-925d-74cad86f93b2" />
-
+<img width="1115" height="87" alt="2" src="https://github.com/user-attachments/assets/1a37c45c-091e-4ff1-bed4-ba9a58ba120b" />
 
 
 Then import FeatureRank at the Python prompt:
@@ -48,7 +46,7 @@ Then import FeatureRank at the Python prompt:
 >>> import FeatureRank
 ```
 
-<img width="1104" height="668" alt="3" src="https://github.com/user-attachments/assets/db1dc4db-6080-45ac-9d08-d945948dcc2c" />
+<img width="1753" height="791" alt="3" src="https://github.com/user-attachments/assets/dc901c4f-3c25-47ba-88da-b54927557f20" />
 
 
 The import opens the desktop GUI automatically. Do not type `import
@@ -74,14 +72,14 @@ or choose a CSV/TXT file with **Browse…**, select a feature percentage, choose
 
 When the GUI opens, the experiment form is ready for these choices:
 
-<img width="763" height="715" alt="4" src="https://github.com/user-attachments/assets/e136bd77-fc05-4533-94df-65e5c5fd1f51" />
 
+<img width="759" height="837" alt="4" src="https://github.com/user-attachments/assets/d7d1b169-15a4-4882-bee5-ca9a82e8f66d" />
 
 If the required dataset is not listed, press **Browse…** and select its data
 file. For paired datasets, keep the matching label file in the same directory:
 
 
-<img width="1492" height="724" alt="5" src="https://github.com/user-attachments/assets/5b5f4d67-f47c-423a-9efd-4da3f537219b" />
+<img width="1497" height="835" alt="5" src="https://github.com/user-attachments/assets/bd188f4c-e26e-4b07-9fdf-97290bc48ad2" />
 
 
 
@@ -133,69 +131,9 @@ For convenient inspection, the **Open Results Folder** button opens the correspo
 
 All experiment outputs are stored systematically under the `outputs/` directory according to the selected task and dataset. This organization facilitates result verification, comparison between feature-selection configurations, and reproducibility of the conducted experiments.
 
-<img width="1111" height="634" alt="7" src="https://github.com/user-attachments/assets/25be6055-ca79-4368-ba65-769fcc8205b9" />
 
+<img width="1494" height="830" alt="7" src="https://github.com/user-attachments/assets/7c6ff6e3-f1aa-4385-828c-fcc56ca4f5f5" />
 
-## Project Structure
-
-```text
-Feature_Ranking_Project/
-├── FeatureRank/                      installable package and desktop GUI
-│   ├── GUI.py                         Tkinter interface and Launch API
-│   └── __init__.py                    public package exports
-├── data/raw/                         input feature and label files
-├── outputs/                          metrics and generated figures
-├── split_datasets/                   DC blocks, mapping, and combined data
-├── scripts/
-│   ├── FeatureRank.py                main command
-│   ├── RunAutoencoder.py             compatibility wrapper
-│   ├── FeatureBlockDatasetTools.py   split/combine helpers
-│   ├── RunBlockFeatureSelection.py   block comparison workflow
-│   └── RunFeatureRankCV.py           leakage-free repeated CV
-├── src/
-│   ├── Classification.py             classification workflow
-│   ├── Regression.py                 regression workflow
-│   ├── Clustering.py                 clustering workflow
-│   ├── DivideCombine.py              DC orchestration
-│   ├── AutoencoderFeatureSelection.py ranking and selection
-│   ├── DataLoader.py                 dataset loading
-│   ├── Preprocessing.py              cleaning, splitting, and scaling
-│   ├── Models.py                     Keras model definitions
-│   ├── Workflow.py                   shared task entry point
-│   └── Config.py                     project defaults
-├── tests/
-├── pyproject.toml
-├── requirements.txt
-└── Readme.md
-```
-
-All Python script names use PascalCase. `src/__init__.py` remains unchanged
-because it is a special Python package filename.
-
-## Requirements
-
-The main technologies are:
-
-- Python
-- TensorFlow / Keras
-- pandas
-- NumPy
-- scikit-learn
-- Matplotlib
-
-Exact pinned versions are listed in
-[`requirements.txt`](requirements.txt). GPU dependencies are listed separately
-in [`requirements-gpu.txt`](requirements-gpu.txt).
-
-## Tests
-
-Run the checks from the repository root:
-
-```bash
-python -m pytest -q
-python -m pyflakes src scripts tests
-python -m compileall -q src scripts tests
-```
 
 ## Citation
 
