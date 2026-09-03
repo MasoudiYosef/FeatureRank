@@ -70,6 +70,15 @@ The GUI is the primary end-user interface. Select a dataset from the dropdown
 or choose a CSV/TXT file with **Browse…**, select a feature percentage, choose
 `GL` or `DC`, and press **START**. `Block Count` is enabled only for `DC`.
 
+1. Select dataset
+2. Select task
+3. Select feature selection %
+4. Select GL or DC
+5. If DC → select Block Count
+6. Press START
+7. Inspect results
+
+
 When the GUI opens, the experiment form is ready for these choices:
 
 
@@ -103,24 +112,6 @@ same mode.
 
 
 
-## Parameters
-
-The main user-facing parameters are:
-
-| Parameter | Description |
-| --- | --- |
-| `--dataset-name` | Input dataset name in `data/raw/` |
-| `--task` | `classification`, `regression`, or `clustering` |
-| `--feature-percent` | Percentage of features to select |
-| `--global` | Run GLOBAL mode |
-| `--dc` | Run Divide & Combine mode |
-| `--block-count` | Number of feature blocks in DC mode |
-| `--random-state` | Seed; use `none` for an unseeded run |
-| `--target-column` | Target column name |
-| `--id-column` | ID column name, or `none` |
-| `--cluster-k` | Fixed cluster count for clustering |
-
-
 ### Result Inspection and Output Access
 
 After an experiment is completed successfully, FeatureRank automatically reports the main execution details in the GUI, including the selected feature count, evaluation metric(s), execution time, and output directory.
@@ -137,6 +128,4 @@ All experiment outputs are stored systematically under the `outputs/` directory 
 
 ## Citation
 
-Citation information will be added after publication. When reporting a result,
-include the dataset source, task, GLOBAL or DC mode, feature percentage, block
-count when applicable, random seed, and the generated metric files.
+If you use FeatureRank in academic research, please cite the associated publication. Citation details will be added upon publication..
