@@ -102,7 +102,6 @@ When the run finishes, the summary lists the selected feature count, metric,
 execution time, and output directory. **Open Results Folder** opens that
 directory in Finder, Explorer, or the Linux file manager.
 
-<img width="1662" height="897" alt="7" src="https://github.com/user-attachments/assets/49e7999e-e91d-41d6-be1e-a594699391b8" />
 
 <img width="1664" height="545" alt="6" src="https://github.com/user-attachments/assets/d6c30c79-dace-4e1f-b601-4dcfe7fce7dd" />
 
