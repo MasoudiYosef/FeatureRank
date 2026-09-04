@@ -27,7 +27,8 @@ Install the published package with:
 pip install FeatureRank
 ```
 
-<img width="1134" height="132" alt="1" src="https://github.com/user-attachments/assets/d8720e4d-437a-4da0-b2ab-48d9dba6cdf8" />
+<img width="1677" height="215" alt="1" src="https://github.com/user-attachments/assets/a289ac39-aca3-4dcf-8cd7-903c78f016e3" />
+
 
 
 Open Python:
@@ -37,7 +38,7 @@ python3
 ```
 
 
-<img width="1115" height="87" alt="2" src="https://github.com/user-attachments/assets/1a37c45c-091e-4ff1-bed4-ba9a58ba120b" />
+<img width="1677" height="137" alt="2" src="https://github.com/user-attachments/assets/4d11c628-59ce-45b7-aa42-5b6756c53f02" />
 
 
 Then import FeatureRank at the Python prompt:
@@ -46,11 +47,14 @@ Then import FeatureRank at the Python prompt:
 >>> import FeatureRank
 ```
 
-<img width="1753" height="791" alt="3" src="https://github.com/user-attachments/assets/dc901c4f-3c25-47ba-88da-b54927557f20" />
+
+<img width="1664" height="946" alt="3" src="https://github.com/user-attachments/assets/9df78d81-b44f-47d3-803c-94289b5ce361" />
+
 
 
 The import opens the desktop GUI automatically. Do not type `import
-FeatureRank` directly in zsh; it is Python code and must be entered after
+F<img width="1673" height="1041" alt="4" src="https://github.com/user-attachments/assets/d6be4ac4-c3f5-4ba7-80f4-641e62919431" />
+eatureRank` directly in zsh; it is Python code and must be entered after
 starting `python3`.
 
 
@@ -82,13 +86,13 @@ or choose a CSV/TXT file with **Browse…**, select a feature percentage, choose
 When the GUI opens, the experiment form is ready for these choices:
 
 
-<img width="759" height="837" alt="4" src="https://github.com/user-attachments/assets/d7d1b169-15a4-4882-bee5-ca9a82e8f66d" />
+<img width="1673" height="1041" alt="4" src="https://github.com/user-attachments/assets/ce7115fe-32b8-40b3-b792-03ea07ebbd0f" />
 
 If the required dataset is not listed, press **Browse…** and select its data
 file. For paired datasets, keep the matching label file in the same directory:
 
 
-<img width="1497" height="835" alt="5" src="https://github.com/user-attachments/assets/bd188f4c-e26e-4b07-9fdf-97290bc48ad2" />
+<img width="1664" height="1033" alt="5" src="https://github.com/user-attachments/assets/f5114f13-3916-4ecb-9dfc-8f6e18ebb950" />
 
 
 
@@ -98,8 +102,9 @@ When the run finishes, the summary lists the selected feature count, metric,
 execution time, and output directory. **Open Results Folder** opens that
 directory in Finder, Explorer, or the Linux file manager.
 
+<img width="1662" height="897" alt="7" src="https://github.com/user-attachments/assets/49e7999e-e91d-41d6-be1e-a594699391b8" />
 
-<img width="852" height="428" alt="6" src="https://github.com/user-attachments/assets/d2908867-882b-4efc-9ff2-49a59cbe27dc" />
+<img width="1664" height="545" alt="6" src="https://github.com/user-attachments/assets/d6c30c79-dace-4e1f-b601-4dcfe7fce7dd" />
 
 
 
@@ -123,7 +128,7 @@ For convenient inspection, the **Open Results Folder** button opens the correspo
 All experiment outputs are stored systematically under the `outputs/` directory according to the selected task and dataset. This organization facilitates result verification, comparison between feature-selection configurations, and reproducibility of the conducted experiments.
 
 
-<img width="1494" height="830" alt="7" src="https://github.com/user-attachments/assets/7c6ff6e3-f1aa-4385-828c-fcc56ca4f5f5" />
+<img width="1662" height="897" alt="7" src="https://github.com/user-attachments/assets/1949614a-791d-4e70-833b-61567f6ac74a" />
 
 
 ## Citation
